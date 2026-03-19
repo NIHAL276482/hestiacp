@@ -1,19 +1,24 @@
 #!/bin/bash
 # ======================================================== #
 #
-# HestiaCP Deep Cleanup Scanner
-# Scans for and removes leftover HestiaCP configurations
-# even after HestiaCP has been uninstalled.
+# HestiaCP Deep Cleanup Scanner & Config Reverter
+# Scans for and removes ALL leftover HestiaCP configurations,
+# removes PHP/MySQL/PostgreSQL/mail/DNS/FTP packages,
+# and RESTORES nginx & apache to clean working defaults.
 #
 # Usage:
 #   v-cleanup-hestia [OPTIONS]
 #
 # Options:
-#   --force, -f      Skip all confirmation prompts
-#   --dry-run, -n    Show what would be done (no changes)
-#   --nginx-only     Only clean nginx configs
-#   --deep           Extra thorough scan (checks every config file)
-#   --help, -h       Show help
+#   --force, -f          Skip all confirmation prompts
+#   --dry-run, -n        Show what would be done (no changes)
+#   --nginx-only         Only clean nginx configs
+#   --deep               Extra thorough scan (checks every config file)
+#   --keep-php           Do NOT remove PHP packages
+#   --keep-mysql         Do NOT remove MySQL/MariaDB packages
+#   --keep-pgsql         Do NOT remove PostgreSQL packages
+#   --keep-mail          Do NOT remove Exim4/Dovecot packages
+#   --help, -h           Show help
 #
 # ======================================================== #
 
@@ -24,9 +29,14 @@ DRY_RUN=false
 FORCE=false
 NGINX_ONLY=false
 DEEP_SCAN=false
+KEEP_PHP=false
+KEEP_MYSQL=false
+KEEP_PGSQL=false
+KEEP_MAIL=false
 SUMMARY=()
 FOUND=()
 REMOVED=()
+FIXED=()
 
 # Colors
 RED='\033[0;31m'
@@ -83,6 +93,12 @@ removed_item() {
 	log "[REMOVED] $1"
 }
 
+fixed_item() {
+	FIXED+=("$1")
+	SUMMARY+=("Fixed: $1")
+	log "[FIXED] $1"
+}
+
 run_cmd() {
 	if [ "$DRY_RUN" = true ]; then
 		echo -e "  ${YELLOW}[DRY-RUN]${NC} $*"
@@ -116,19 +132,42 @@ is_hestia_file() {
 	grep -ql "hestia\|HESTIA\|/usr/local/hestia\|hestiaweb\|hestiamail\|HestiaCP\|hst_\|v-restart-web\|v-update-sys" "$f" 2>/dev/null
 }
 
-# Check if a directory is HestiaCP-managed
-is_hestia_dir() {
-	local d="$1"
-	[ -d "$d" ] || return 1
-	# Check if directory name contains hestia
-	if echo "$d" | grep -qi "hestia"; then
-		return 0
+# Remove package if installed
+remove_package() {
+	local pkg="$1"
+	if dpkg -l 2>/dev/null | grep -q "^ii.*[[:space:]]$pkg[[:space:]]"; then
+		found_item "package: $pkg"
+		info "Removing package: $pkg"
+		run_cmd "DEBIAN_FRONTEND=noninteractive apt-get purge -y '$pkg' 2>/dev/null || true"
+		removed_item "package: $pkg"
 	fi
-	# Check for HestiaCP marker files
-	if [ -f "$d/hestia.conf" ] || [ -f "$d/.hestia" ]; then
-		return 0
+}
+
+# Stop & disable service
+stop_service() {
+	local svc="$1"
+	if systemctl is-active --quiet "$svc" 2>/dev/null; then
+		info "Stopping $svc..."
+		run_cmd "systemctl stop '$svc'"
 	fi
-	return 1
+	if systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+		run_cmd "systemctl disable '$svc'"
+	fi
+}
+
+# Detect OS distro
+detect_os() {
+	OS_TYPE=""
+	if [ -e "/etc/os-release" ]; then
+		os_id=$(grep "^ID=" /etc/os-release | cut -f 2 -d '=' | tr -d '"')
+		case "$os_id" in
+			debian) OS_TYPE="debian" ;;
+			ubuntu) OS_TYPE="ubuntu" ;;
+			*)      OS_TYPE="$os_id" ;;
+		esac
+	else
+		OS_TYPE="unknown"
+	fi
 }
 
 # ----------------------------------------------------------
@@ -137,37 +176,32 @@ is_hestia_dir() {
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-		--force|-f)
-			FORCE=true
-			shift
-			;;
-		--dry-run|--dryrun|-n)
-			DRY_RUN=true
-			shift
-			;;
-		--nginx-only)
-			NGINX_ONLY=true
-			shift
-			;;
-		--deep)
-			DEEP_SCAN=true
-			shift
-			;;
+		--force|-f)          FORCE=true; shift ;;
+		--dry-run|--dryrun|-n) DRY_RUN=true; shift ;;
+		--nginx-only)        NGINX_ONLY=true; shift ;;
+		--deep)              DEEP_SCAN=true; shift ;;
+		--keep-php)          KEEP_PHP=true; shift ;;
+		--keep-mysql)        KEEP_MYSQL=true; shift ;;
+		--keep-pgsql)        KEEP_PGSQL=true; shift ;;
+		--keep-mail)         KEEP_MAIL=true; shift ;;
 		--help|-h)
-			echo "HestiaCP Deep Cleanup Scanner"
+			echo "HestiaCP Deep Cleanup Scanner & Config Reverter"
 			echo ""
 			echo "Usage: v-cleanup-hestia [OPTIONS]"
 			echo ""
-			echo "Scans for leftover HestiaCP configurations even after"
-			echo "HestiaCP has been uninstalled. Cleans nginx, apache,"
-			echo "mail, DNS, fail2ban, logrotate, cron, and more."
+			echo "Removes ALL HestiaCP leftovers, uninstalls PHP/MySQL/mail/DNS/FTP"
+			echo "packages, and restores nginx & apache to clean working defaults."
 			echo ""
 			echo "Options:"
-			echo "  --force, -f      Skip all confirmation prompts"
-			echo "  --dry-run, -n    Show what would be done (no changes)"
-			echo "  --nginx-only     Only clean nginx configs"
-			echo "  --deep           Extra thorough scan (slower, checks every config)"
-			echo "  --help, -h       Show this help message"
+			echo "  --force, -f       Skip all confirmation prompts"
+			echo "  --dry-run, -n     Show what would be done (no changes)"
+			echo "  --nginx-only      Only clean nginx configs"
+			echo "  --deep            Extra thorough scan (slower, checks every config)"
+			echo "  --keep-php        Do NOT remove PHP packages"
+			echo "  --keep-mysql      Do NOT remove MySQL/MariaDB packages"
+			echo "  --keep-pgsql      Do NOT remove PostgreSQL packages"
+			echo "  --keep-mail       Do NOT remove Exim4/Dovecot packages"
+			echo "  --help, -h        Show this help message"
 			exit 0
 			;;
 		*)
@@ -184,8 +218,8 @@ done
 
 echo -e "${BOLD}${MAGENTA}"
 echo "========================================================"
-echo "  HestiaCP Deep Cleanup Scanner"
-echo "  Scans for leftover configurations after uninstall"
+echo "  HestiaCP Deep Cleanup & Config Reverter"
+echo "  Removes leftovers, fixes broken configs"
 echo "========================================================"
 echo -e "${NC}"
 
@@ -205,29 +239,215 @@ if [ "$DRY_RUN" = true ]; then
 	warn "DRY-RUN MODE: No changes will be made."
 fi
 
+detect_os
+info "Detected OS: $OS_TYPE"
+
 # ----------------------------------------------------------
-# Phase 1: Nginx Deep Cleanup
+# Phase 1: Stop HestiaCP Services
 # ----------------------------------------------------------
 
-step "Phase 1: Nginx configuration cleanup"
+step "Phase 1: Stopping all HestiaCP-related services"
 
-if [ -d "/etc/nginx" ]; then
+# Stop HestiaCP core
+stop_service "hestia"
+stop_service "hestia-web-terminal"
+
+# Stop services that will be removed
+if [ "$KEEP_MAIL" = false ]; then
+	stop_service "exim4"
+	stop_service "dovecot"
+fi
+
+# Stop databases that will be removed
+if [ "$KEEP_MYSQL" = false ]; then
+	stop_service "mariadb"
+	stop_service "mysql"
+fi
+if [ "$KEEP_PGSQL" = false ]; then
+	stop_service "postgresql"
+fi
+
+# Stop PHP-FPM (will be removed unless --keep-php)
+if [ "$KEEP_PHP" = false ]; then
+	for fpm_svc in $(systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -E "^php.*-fpm\.service$"); do
+		stop_service "${fpm_svc%.service}"
+	done
+fi
+
+# Stop DNS
+stop_service "named"
+stop_service "bind9"
+
+# Stop FTP
+stop_service "vsftpd"
+
+# Stop fail2ban
+stop_service "fail2ban"
+
+success "All HestiaCP services stopped."
+
+# ----------------------------------------------------------
+# Phase 2: Remove HestiaCP Packages
+# ----------------------------------------------------------
+
+step "Phase 2: Removing HestiaCP packages"
+
+HST_PACKAGES=("hestia" "hestia-nginx" "hestia-php")
+for pkg in "${HST_PACKAGES[@]}"; do
+	remove_package "$pkg"
+done
+
+success "HestiaCP packages removed."
+
+# ----------------------------------------------------------
+# Phase 3: Remove Service Packages (PHP, MySQL, Mail, DNS, FTP)
+# ----------------------------------------------------------
+
+step "Phase 3: Removing service packages"
+
+# --- PHP (all versions) ---
+if [ "$KEEP_PHP" = false ]; then
+	info "Removing PHP packages..."
+	PHP_PKGS=$(dpkg -l 2>/dev/null | awk '/^ii/ && /php/ {print $2}' | grep -v "libapache2-mod-php" 2>/dev/null || true)
+	for pkg in $PHP_PKGS; do
+		remove_package "$pkg"
+	done
+	# Also remove php-common, php-cli, etc.
+	for pkg in php php-common php-cli php-fpm php-json php-mysql php-pgsql php-gd php-mbstring php-xml php-curl php-zip php-intl php-bcmath php-soap php-imagick; do
+		remove_package "$pkg"
+	done
+	# Clean PHP config dirs
+	run_cmd "rm -rf /etc/php"
+	removed_item "/etc/php/"
+else
+	info "PHP removal skipped (--keep-php)"
+fi
+
+# --- MySQL / MariaDB ---
+if [ "$KEEP_MYSQL" = false ]; then
+	info "Removing MySQL/MariaDB packages..."
+	for pkg in mariadb-server mariadb-client mariadb-common mysql-server mysql-client mysql-common libmariadb3 libmysqlclient21; do
+		remove_package "$pkg"
+	done
+	# Clean MySQL config/data
+	run_cmd "rm -rf /etc/mysql"
+	run_cmd "rm -rf /var/lib/mysql"
+	run_cmd "rm -rf /var/log/mysql"
+	removed_item "/etc/mysql/ /var/lib/mysql/ /var/log/mysql/"
+else
+	info "MySQL removal skipped (--keep-mysql)"
+fi
+
+# --- PostgreSQL ---
+if [ "$KEEP_PGSQL" = false ]; then
+	info "Removing PostgreSQL packages..."
+	for pkg in postgresql postgresql-common postgresql-client; do
+		remove_package "$pkg"
+	done
+	run_cmd "rm -rf /etc/postgresql"
+	run_cmd "rm -rf /var/lib/postgresql"
+	removed_item "/etc/postgresql/ /var/lib/postgresql/"
+else
+	info "PostgreSQL removal skipped (--keep-pgsql)"
+fi
+
+# --- Mail (Exim4 + Dovecot) ---
+if [ "$KEEP_MAIL" = false ]; then
+	info "Removing mail packages..."
+	for pkg in exim4 exim4-base exim4-config exim4-daemon-heavy exim4-daemon-light dovecot-core dovecot-imapd dovecot-pop3d dovecot-managesieved dovecot-sieve dovecot-lmtpd; do
+		remove_package "$pkg"
+	done
+	# Clean mail configs
+	run_cmd "rm -rf /etc/exim4"
+	run_cmd "rm -rf /etc/dovecot"
+	removed_item "/etc/exim4/ /etc/dovecot/"
+else
+	info "Mail removal skipped (--keep-mail)"
+fi
+
+# --- DNS (Bind9) ---
+info "Removing DNS packages..."
+for pkg in bind9 bind9utils bind9-dnsutils; do
+	remove_package "$pkg"
+done
+run_cmd "rm -rf /etc/bind"
+removed_item "/etc/bind/"
+
+# --- FTP (vsftpd) ---
+info "Removing FTP packages..."
+remove_package "vsftpd"
+run_cmd "rm -rf /etc/vsftpd"
+removed_item "/etc/vsftpd/"
+
+# --- Fail2Ban ---
+info "Removing Fail2Ban packages..."
+remove_package "fail2ban"
+run_cmd "rm -rf /etc/fail2ban"
+removed_item "/etc/fail2ban/"
+
+# --- Roundcube / phpMyAdmin / phpPgAdmin ---
+info "Removing webmail/admin packages..."
+for pkg in roundcube roundcube-core roundcube-plugins phpmyadmin phppgadmin; do
+	remove_package "$pkg"
+done
+run_cmd "rm -rf /etc/roundcube"
+run_cmd "rm -rf /etc/phpmyadmin"
+run_cmd "rm -rf /etc/phppgadmin"
+run_cmd "rm -rf /usr/share/roundcube"
+run_cmd "rm -rf /usr/share/phpmyadmin"
+run_cmd "rm -rf /usr/share/phppgadmin"
+removed_item "roundcube/phpmyadmin/phppgadmin packages and configs"
+
+success "Service packages removed."
+
+# ----------------------------------------------------------
+# Phase 4: Remove Users, Groups, Crontabs
+# ----------------------------------------------------------
+
+step "Phase 4: Removing HestiaCP users, groups & crontabs"
+
+HST_USERS=("hestiaweb" "hestiamail" "hestiasshd" "hestiadns" "hestia" "hestiaftp")
+HST_GROUPS=("hestiaweb" "hestiamail" "hestiasshd" "hestiadns" "hestia" "hestiaftp")
+
+for user in "${HST_USERS[@]}"; do
+	if id "$user" &>/dev/null; then
+		found_item "user: $user"
+		run_cmd "crontab -u '$user' -r 2>/dev/null || true"
+		run_cmd "userdel -f '$user' 2>/dev/null || true"
+		removed_item "user: $user"
+	fi
+done
+
+for group in "${HST_GROUPS[@]}"; do
+	if getent group "$group" &>/dev/null; then
+		found_item "group: $group"
+		run_cmd "groupdel '$group' 2>/dev/null || true"
+		removed_item "group: $group"
+	fi
+done
+
+# Clean crontabs
+run_cmd "rm -f /var/spool/cron/crontabs/hestiaweb"
+run_cmd "rm -f /var/spool/cron/crontabs/hestiamail"
+for cronfile in /etc/cron.d/hestia*; do
+	[ -f "$cronfile" ] && run_cmd "rm -f '$cronfile'"
+done
+if [ -f "/etc/cron.daily/php-session-cleanup" ] && is_hestia_file "/etc/cron.daily/php-session-cleanup"; then
+	run_cmd "rm -f /etc/cron.daily/php-session-cleanup"
+fi
+
+success "Users, groups & crontabs cleaned."
+
+# ----------------------------------------------------------
+# Phase 5: Nginx Deep Cleanup + Config Restore
+# ----------------------------------------------------------
+
+step "Phase 5: Nginx cleanup & config restore"
+
+if [ -d "/etc/nginx" ] && command -v nginx &>/dev/null; then
 	info "Scanning /etc/nginx/ for HestiaCP artifacts..."
 
-	# --- Main nginx.conf ---
-	if [ -f "/etc/nginx/nginx.conf" ]; then
-		if is_hestia_file "/etc/nginx/nginx.conf"; then
-			found_item "nginx.conf (HestiaCP-managed)"
-			if grep -q "fastcgi_cache_path.*microcache\|proxy_cache_path.*cache:10m\|conf\.d/domains\|cloudflare\.inc\|0rtt-anti-replay" /etc/nginx/nginx.conf 2>/dev/null; then
-				info "Removing HestiaCP nginx.conf..."
-				run_cmd "rm -f /etc/nginx/nginx.conf"
-				removed_item "nginx.conf"
-			fi
-		fi
-	fi
-
-	# --- conf.d files ---
-	# Known HestiaCP conf.d files (installed during setup)
+	# --- Remove HestiaCP conf.d files ---
 	HST_NGINX_CONFS=(
 		"status.conf"
 		"0rtt-anti-replay.conf"
@@ -237,41 +457,33 @@ if [ -d "/etc/nginx" ]; then
 		"phppgadmin.inc"
 		"hestia.conf"
 		"unassigned.inc"
-		"hestia-*.conf"
-		"hestia-*.inc"
 	)
-
-	for conf_pattern in "${HST_NGINX_CONFS[@]}"; do
-		for conf_file in /etc/nginx/conf.d/$conf_pattern; do
-			if [ -f "$conf_file" ]; then
-				found_item "nginx/conf.d/$(basename "$conf_file")"
-				info "Removing nginx conf.d: $(basename "$conf_file")"
-				run_cmd "rm -f '$conf_file'"
-				removed_item "nginx/conf.d/$(basename "$conf_file")"
-			fi
-		done
+	for conf in "${HST_NGINX_CONFS[@]}"; do
+		if [ -f "/etc/nginx/conf.d/$conf" ]; then
+			found_item "nginx/conf.d/$conf"
+			run_cmd "rm -f '/etc/nginx/conf.d/$conf'"
+			removed_item "nginx/conf.d/$conf"
+		fi
 	done
 
-	# Scan remaining conf.d files for hestia references
+	# Remove any remaining conf.d files with hestia refs
 	for f in /etc/nginx/conf.d/*.conf /etc/nginx/conf.d/*.inc; do
 		if [ -f "$f" ] && is_hestia_file "$f"; then
 			found_item "nginx/conf.d/$(basename "$f")"
-			info "Removing HestiaCP-referencing nginx conf: $(basename "$f")"
 			run_cmd "rm -f '$f'"
 			removed_item "nginx/conf.d/$(basename "$f")"
 		fi
 	done
 
-	# --- Domain configs ---
+	# Remove domain configs directory
 	if [ -d "/etc/nginx/conf.d/domains" ]; then
-		found_item "nginx/conf.d/domains/"
 		domain_count=$(find /etc/nginx/conf.d/domains -type f 2>/dev/null | wc -l)
-		info "Removing nginx domain configs ($domain_count files)..."
+		found_item "nginx/conf.d/domains/ ($domain_count files)"
 		run_cmd "rm -rf /etc/nginx/conf.d/domains"
-		removed_item "nginx/conf.d/domains/ ($domain_count files)"
+		removed_item "nginx/conf.d/domains/"
 	fi
 
-	# --- sites-enabled / sites-available ---
+	# Remove sites-enabled/available HestiaCP entries
 	for dir in sites-enabled sites-available; do
 		if [ -d "/etc/nginx/$dir" ]; then
 			for f in /etc/nginx/$dir/*; do
@@ -284,46 +496,183 @@ if [ -d "/etc/nginx" ]; then
 		fi
 	done
 
-	# --- Cache directories ---
-	for cache_dir in /var/cache/nginx/micro /var/cache/nginx/temp /var/cache/nginx; do
-		if [ -d "$cache_dir" ]; then
-			# Check if cache dir has HestiaCP domain-specific entries
-			if [ "$cache_dir" = "/var/cache/nginx/micro" ] || [ "$cache_dir" = "/var/cache/nginx/temp" ]; then
-				found_item "$cache_dir/"
-				info "Removing nginx cache: $cache_dir/"
-				run_cmd "rm -rf '$cache_dir'"
-				removed_item "$cache_dir/"
-			elif [ "$cache_dir" = "/var/cache/nginx" ] && [ -d "/var/cache/nginx/micro" ]; then
-				# Only remove the micro subdir, keep proxy cache
-				run_cmd "rm -rf /var/cache/nginx/micro"
-				removed_item "/var/cache/nginx/micro/"
+	# --- Fix nginx.conf ---
+	# Check if nginx.conf is HestiaCP-managed (references hestia paths, SSL certs, etc.)
+	NGINX_NEEDS_RESTORE=false
+	if [ -f "/etc/nginx/nginx.conf" ]; then
+		# Check for broken SSL cert references
+		if grep -q "/usr/local/hestia/ssl/" /etc/nginx/nginx.conf 2>/dev/null; then
+			warn "nginx.conf references HestiaCP SSL paths - will restore default"
+			NGINX_NEEDS_RESTORE=true
+		fi
+		# Check for HestiaCP-specific includes
+		if grep -q "conf\.d/domains\|cloudflare\.inc\|0rtt-anti-replay" /etc/nginx/nginx.conf 2>/dev/null; then
+			warn "nginx.conf contains HestiaCP-specific includes - will restore default"
+			NGINX_NEEDS_RESTORE=true
+		fi
+		# Check if it's the full HestiaCP nginx.conf (has microcache, proxy_cache_path etc.)
+		if grep -q "fastcgi_cache_path.*microcache\|proxy_cache_path.*cache:10m" /etc/nginx/nginx.conf 2>/dev/null; then
+			NGINX_NEEDS_RESTORE=true
+		fi
+	fi
+
+	if [ "$NGINX_NEEDS_RESTORE" = true ] || [ ! -f "/etc/nginx/nginx.conf" ]; then
+		found_item "nginx.conf (HestiaCP-managed, broken)"
+		info "Generating clean default nginx.conf..."
+
+		if [ "$DRY_RUN" = false ]; then
+			cat > /etc/nginx/nginx.conf << 'NGINX_DEFAULT_CONF'
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+error_log /var/log/nginx/error.log;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+    worker_connections 768;
+    # multi_accept on;
+}
+
+http {
+    ##
+    # Basic Settings
+    ##
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    # server_tokens off;
+    # server_names_hash_bucket_size 64;
+    # server_name_in_redirect off;
+
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    ##
+    # SSL Settings
+    ##
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    # ssl_session_tickets off;
+    # ssl_dhparam /etc/nginx/dhparam.pem;
+
+    ##
+    # Logging Settings
+    ##
+    access_log /var/log/nginx/access.log;
+
+    ##
+    # Gzip Settings
+    ##
+    gzip on;
+    # gzip_vary on;
+    # gzip_proxied any;
+    # gzip_comp_level 6;
+    # gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
+    ##
+    # Virtual Host Configs
+    ##
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}
+NGINX_DEFAULT_CONF
+			fixed_item "nginx.conf → restored clean default"
+		fi
+	else
+		# nginx.conf exists and is NOT HestiaCP-managed, but check for broken includes
+		# Fix any include that references missing files
+		if grep -q "include.*cloudflare\|include.*0rtt-anti-replay\|include.*domains" /etc/nginx/nginx.conf 2>/dev/null; then
+			info "Patching nginx.conf includes..."
+			if [ "$DRY_RUN" = false ]; then
+				# Remove broken include lines
+				sed -i '/include.*cloudflare\.inc/d' /etc/nginx/nginx.conf
+				sed -i '/include.*0rtt-anti-replay/d' /etc/nginx/nginx.conf
+				sed -i '/include.*conf\.d\/domains/d' /etc/nginx/nginx.conf
+			fi
+			fixed_item "nginx.conf → removed broken includes"
+		fi
+	fi
+
+	# --- Fix any remaining conf.d files that reference hestia SSL paths ---
+	for f in /etc/nginx/conf.d/*.conf /etc/nginx/conf.d/*.inc /etc/nginx/sites-enabled/* /etc/nginx/sites-available/*; do
+		if [ -f "$f" ]; then
+			# Check for broken SSL cert paths
+			if grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
+				found_item "$(basename "$f") (broken SSL cert reference)"
+				# If this is a site config referencing hestia SSL, remove the SSL block
+				if grep -q "ssl_certificate" "$f" 2>/dev/null; then
+					info "Fixing broken SSL cert in: $(basename "$f")"
+					if [ "$DRY_RUN" = false ]; then
+						# Comment out ssl_certificate lines
+						sed -i 's|^\s*ssl_certificate|# ssl_certificate|g' "$f"
+						sed -i 's|^\s*ssl_certificate_key|# ssl_certificate_key|g' "$f"
+						# Comment out listen 443 lines
+						sed -i 's|^\s*listen.*443.*ssl|# listen 443 ssl (disabled - cert missing)|g' "$f"
+					fi
+					fixed_item "$(basename "$f") → disabled broken SSL"
+				fi
+			fi
+			# Check for other hestia references
+			if grep -q "/usr/local/hestia/" "$f" 2>/dev/null; then
+				found_item "$(basename "$f") (hestia path reference)"
+				warn "File $(basename "$f") still references /usr/local/hestia/ - review manually"
 			fi
 		fi
 	done
 
-	# --- Logrotate ---
+	# --- Remove HestiaCP SSL directory ---
+	if [ -d "/usr/local/hestia/ssl" ]; then
+		found_item "/usr/local/hestia/ssl/"
+		run_cmd "rm -rf /usr/local/hestia/ssl"
+		removed_item "/usr/local/hestia/ssl/"
+	fi
+
+	# --- Remove nginx cache directories ---
+	run_cmd "rm -rf /var/cache/nginx/micro"
+	run_cmd "rm -rf /var/cache/nginx/temp"
+	removed_item "nginx cache dirs (micro, temp)"
+
+	# --- Fix logrotate ---
 	if [ -f "/etc/logrotate.d/nginx" ] && is_hestia_file "/etc/logrotate.d/nginx"; then
 		found_item "logrotate.d/nginx"
 		run_cmd "rm -f /etc/logrotate.d/nginx"
 		removed_item "logrotate.d/nginx"
 	fi
 
-	# --- Nginx logs created by HestiaCP ---
+	# --- Remove domain logs ---
 	if [ -d "/var/log/nginx/domains" ]; then
 		found_item "/var/log/nginx/domains/"
-		domain_logs=$(find /var/log/nginx/domains -type f 2>/dev/null | wc -l)
-		if confirm "Remove nginx domain logs ($domain_logs files in /var/log/nginx/domains/)?"; then
-			run_cmd "rm -rf /var/log/nginx/domains"
-			removed_item "/var/log/nginx/domains/ ($domain_logs files)"
-		fi
+		run_cmd "rm -rf /var/log/nginx/domains"
+		removed_item "/var/log/nginx/domains/"
 	fi
 
-	success "Nginx cleanup complete."
+	# --- Ensure conf.d dir exists ---
+	run_cmd "mkdir -p /etc/nginx/conf.d"
+	run_cmd "mkdir -p /etc/nginx/sites-available"
+	run_cmd "mkdir -p /etc/nginx/sites-enabled"
+
+	# --- Test nginx config and start ---
+	info "Testing nginx configuration..."
+	if nginx -t 2>&1 | grep -q "successful\|syntax is ok"; then
+		success "nginx config test PASSED"
+		run_cmd "systemctl start nginx"
+		run_cmd "systemctl enable nginx"
+		success "nginx started and enabled"
+	else
+		error "nginx config test FAILED:"
+		nginx -t 2>&1 | while IFS= read -r line; do error "  $line"; done
+		warn "nginx could not start. Fix the config manually."
+	fi
+
+	success "Nginx cleanup & restore complete."
 else
 	info "Nginx not installed, skipping."
 fi
 
-# Stop here if nginx-only mode
 if [ "$NGINX_ONLY" = true ]; then
 	goto_summary=true
 fi
@@ -331,15 +680,15 @@ fi
 if [ "${goto_summary:-}" != "true" ]; then
 
 # ----------------------------------------------------------
-# Phase 2: Apache Cleanup
+# Phase 6: Apache Cleanup + Restore
 # ----------------------------------------------------------
 
-step "Phase 2: Apache configuration cleanup"
+step "Phase 6: Apache cleanup & config restore"
 
-if [ -d "/etc/apache2" ]; then
+if [ -d "/etc/apache2" ] && command -v apache2ctl &>/dev/null; then
 	info "Scanning /etc/apache2/ for HestiaCP artifacts..."
 
-	# Known HestiaCP apache confs
+	# Remove HestiaCP apache confs
 	HST_APACHE_CONFS=(
 		"hestia.conf"
 		"hestia-event.conf"
@@ -356,14 +705,14 @@ if [ -d "/etc/apache2" ]; then
 		fi
 	done
 
-	# Domain configs
+	# Remove domain configs
 	if [ -d "/etc/apache2/conf.d/domains" ]; then
 		found_item "apache2/conf.d/domains/"
 		run_cmd "rm -rf /etc/apache2/conf.d/domains"
 		removed_item "apache2/conf.d/domains/"
 	fi
 
-	# Scan remaining confs
+	# Remove any confs with hestia refs
 	for f in /etc/apache2/conf.d/*.conf /etc/apache2/conf.d/*.inc; do
 		if [ -f "$f" ] && is_hestia_file "$f"; then
 			found_item "apache2/conf.d/$(basename "$f")"
@@ -372,7 +721,7 @@ if [ -d "/etc/apache2" ]; then
 		fi
 	done
 
-	# Sites
+	# Remove hestia sites
 	for dir in sites-enabled sites-available; do
 		for f in /etc/apache2/$dir/*hestia*; do
 			if [ -f "$f" ]; then
@@ -383,203 +732,50 @@ if [ -d "/etc/apache2" ]; then
 		done
 	done
 
-	# Logrotate
+	# Fix apache configs referencing hestia SSL
+	for f in /etc/apache2/sites-enabled/* /etc/apache2/sites-available/* /etc/apache2/conf.d/*; do
+		if [ -f "$f" ] && grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
+			found_item "$(basename "$f") (broken SSL cert reference)"
+			if [ "$DRY_RUN" = false ]; then
+				sed -i 's|^\s*SSLCertificateFile|# SSLCertificateFile (disabled - cert missing)|g' "$f"
+				sed -i 's|^\s*SSLCertificateKeyFile|# SSLCertificateKeyFile (disabled - cert missing)|g' "$f"
+			fi
+			fixed_item "$(basename "$f") → disabled broken SSL"
+		fi
+	done
+
+	# Fix logrotate
 	if [ -f "/etc/logrotate.d/apache2" ] && is_hestia_file "/etc/logrotate.d/apache2"; then
 		found_item "logrotate.d/apache2"
 		run_cmd "rm -f /etc/logrotate.d/apache2"
 		removed_item "logrotate.d/apache2"
 	fi
 
-	success "Apache cleanup complete."
+	# Test and start apache
+	info "Testing apache configuration..."
+	if apache2ctl configtest 2>&1 | grep -q "Syntax OK"; then
+		success "Apache config test PASSED"
+		run_cmd "systemctl start apache2"
+		run_cmd "systemctl enable apache2"
+		success "Apache started and enabled"
+	else
+		warn "Apache config test failed. Review manually."
+		apache2ctl configtest 2>&1 | while IFS= read -r line; do warn "  $line"; done
+	fi
+
+	success "Apache cleanup & restore complete."
 else
 	info "Apache not installed, skipping."
 fi
 
 # ----------------------------------------------------------
-# Phase 3: PHP-FPM Cleanup
+# Phase 7: Logrotate, Crontab, Systemd, MOTD Cleanup
 # ----------------------------------------------------------
 
-step "Phase 3: PHP-FPM pool cleanup"
+step "Phase 7: Logrotate, systemd, MOTD & login scripts"
 
-if [ -d "/etc/php" ]; then
-	for phpver_dir in /etc/php/*/fpm/pool.d/; do
-		if [ -d "$phpver_dir" ]; then
-			pool_count=$(find "$phpver_dir" -maxdepth 1 -type f -name "*.conf" ! -name "www.conf" 2>/dev/null | wc -l)
-			if [ "$pool_count" -gt 0 ]; then
-				found_item "PHP-FPM pools in $phpver_dir ($pool_count custom pools)"
-				info "Removing $pool_count custom PHP-FPM pools in $phpver_dir..."
-				find "$phpver_dir" -maxdepth 1 -type f -name "*.conf" ! -name "www.conf" -exec rm -f {} \;
-				removed_item "PHP-FPM custom pools in $phpver_dir"
-			fi
-		fi
-	done
-	success "PHP-FPM cleanup complete."
-else
-	info "PHP not installed, skipping."
-fi
-
-# ----------------------------------------------------------
-# Phase 4: Mail Configs Cleanup
-# ----------------------------------------------------------
-
-step "Phase 4: Mail configuration cleanup"
-
-# Exim4
-if [ -d "/etc/exim4" ]; then
-	info "Scanning /etc/exim4/ for HestiaCP artifacts..."
-
-	# HestiaCP exim configs
-	for f in /etc/exim4/exim4.conf.template.hestia* /etc/exim4/conf.d/main/01_exim4-config_hestia*; do
-		if [ -f "$f" ]; then
-			found_item "exim4/$(basename "$f")"
-			run_cmd "rm -f '$f'"
-			removed_item "exim4/$(basename "$f")"
-		fi
-	done
-
-	# Domain-specific exim configs
-	if [ -d "/etc/exim4/domains" ]; then
-		found_item "exim4/domains/"
-		run_cmd "rm -rf /etc/exim4/domains"
-		removed_item "exim4/domains/"
-	fi
-
-	# Scan remaining exim confs
-	for f in /etc/exim4/*.template /etc/exim4/conf.d/main/*; do
-		if [ -f "$f" ] && is_hestia_file "$f"; then
-			found_item "exim4/$(basename "$f")"
-			info "HestiaCP reference in: $f (review manually)"
-		fi
-	done
-fi
-
-# Dovecot
-if [ -d "/etc/dovecot" ]; then
-	info "Scanning /etc/dovecot/ for HestiaCP artifacts..."
-
-	if [ -d "/etc/dovecot/conf.d/domains" ]; then
-		found_item "dovecot/conf.d/domains/"
-		run_cmd "rm -rf /etc/dovecot/conf.d/domains"
-		removed_item "dovecot/conf.d/domains/"
-	fi
-
-	for f in /etc/dovecot/conf.d/99-hestia*.conf; do
-		if [ -f "$f" ]; then
-			found_item "dovecot/$(basename "$f")"
-			run_cmd "rm -f '$f'"
-			removed_item "dovecot/$(basename "$f")"
-		fi
-	done
-
-	# Logrotate
-	if [ -f "/etc/logrotate.d/dovecot" ] && is_hestia_file "/etc/logrotate.d/dovecot"; then
-		found_item "logrotate.d/dovecot"
-		run_cmd "rm -f /etc/logrotate.d/dovecot"
-		removed_item "logrotate.d/dovecot"
-	fi
-fi
-
-# Roundcube logrotate
-if [ -f "/etc/logrotate.d/roundcube" ] && is_hestia_file "/etc/logrotate.d/roundcube"; then
-	found_item "logrotate.d/roundcube"
-	run_cmd "rm -f /etc/logrotate.d/roundcube"
-	removed_item "logrotate.d/roundcube"
-fi
-
-success "Mail configuration cleanup complete."
-
-# ----------------------------------------------------------
-# Phase 5: DNS Cleanup
-# ----------------------------------------------------------
-
-step "Phase 5: DNS configuration cleanup"
-
-if [ -d "/etc/bind" ]; then
-	if [ -d "/etc/bind/hestia" ]; then
-		found_item "bind/hestia/"
-		run_cmd "rm -rf /etc/bind/hestia"
-		removed_item "bind/hestia/"
-	fi
-
-	if [ -f "/etc/bind/named.conf.local" ] && grep -q "hestia\|HestiaCP" /etc/bind/named.conf.local 2>/dev/null; then
-		found_item "bind/named.conf.local (HestiaCP-managed)"
-		run_cmd "rm -f /etc/bind/named.conf.local"
-		removed_item "bind/named.conf.local"
-	fi
-fi
-
-success "DNS configuration cleanup complete."
-
-# ----------------------------------------------------------
-# Phase 6: Fail2Ban Cleanup
-# ----------------------------------------------------------
-
-step "Phase 6: Fail2Ban cleanup"
-
-if [ -d "/etc/fail2ban" ]; then
-	# HestiaCP action
-	if [ -f "/etc/fail2ban/action.d/hestia.conf" ]; then
-		found_item "fail2ban/action.d/hestia.conf"
-		run_cmd "rm -f /etc/fail2ban/action.d/hestia.conf"
-		removed_item "fail2ban/action.d/hestia.conf"
-	fi
-
-	# HestiaCP filter
-	if [ -f "/etc/fail2ban/filter.d/hestia.conf" ]; then
-		found_item "fail2ban/filter.d/hestia.conf"
-		run_cmd "rm -f /etc/fail2ban/filter.d/hestia.conf"
-		removed_item "fail2ban/filter.d/hestia.conf"
-	fi
-
-	# Jail config managed by HestiaCP
-	if [ -f "/etc/fail2ban/jail.local" ] && is_hestia_file "/etc/fail2ban/jail.local"; then
-		found_item "fail2ban/jail.local (HestiaCP-managed)"
-		run_cmd "rm -f /etc/fail2ban/jail.local"
-		removed_item "fail2ban/jail.local"
-	fi
-
-	# Restart fail2ban if still running
-	if systemctl is-active --quiet fail2ban 2>/dev/null; then
-		run_cmd "systemctl restart fail2ban 2>/dev/null || true"
-	fi
-fi
-
-success "Fail2Ban cleanup complete."
-
-# ----------------------------------------------------------
-# Phase 7: FTP Cleanup
-# ----------------------------------------------------------
-
-step "Phase 7: FTP configuration cleanup"
-
-if [ -f "/etc/vsftpd.conf" ] && is_hestia_file "/etc/vsftpd.conf"; then
-	found_item "vsftpd.conf (HestiaCP-managed)"
-	run_cmd "rm -f /etc/vsftpd.conf"
-	removed_item "vsftpd.conf"
-fi
-
-if [ -d "/etc/vsftpd/user_config_dir" ]; then
-	found_item "vsftpd/user_config_dir/"
-	run_cmd "rm -rf /etc/vsftpd/user_config_dir"
-	removed_item "vsftpd/user_config_dir/"
-fi
-
-success "FTP configuration cleanup complete."
-
-# ----------------------------------------------------------
-# Phase 8: Logrotate Cleanup
-# ----------------------------------------------------------
-
-step "Phase 8: Logrotate cleanup"
-
-HST_LOGROTATE_FILES=(
-	"hestia"
-	"nginx"
-	"apache2"
-	"dovecot"
-	"roundcube"
-)
-
+# Logrotate
+HST_LOGROTATE_FILES=("hestia" "nginx" "apache2" "dovecot" "roundcube")
 for lr in "${HST_LOGROTATE_FILES[@]}"; do
 	if [ -f "/etc/logrotate.d/$lr" ] && is_hestia_file "/etc/logrotate.d/$lr"; then
 		found_item "logrotate.d/$lr"
@@ -588,77 +784,12 @@ for lr in "${HST_LOGROTATE_FILES[@]}"; do
 	fi
 done
 
-# httpd-prerotate
-if [ -f "/etc/logrotate.d/httpd-prerotate/awstats" ]; then
-	if is_hestia_file "/etc/logrotate.d/httpd-prerotate/awstats"; then
-		found_item "logrotate.d/httpd-prerotate/awstats"
-		run_cmd "rm -f /etc/logrotate.d/httpd-prerotate/awstats"
-		removed_item "logrotate.d/httpd-prerotate/awstats"
-	fi
-fi
-
-success "Logrotate cleanup complete."
-
-# ----------------------------------------------------------
-# Phase 9: Crontab & Cron.d Cleanup
-# ----------------------------------------------------------
-
-step "Phase 9: Crontab and cron job cleanup"
-
-# hestiaweb crontab
-if [ -f "/var/spool/cron/crontabs/hestiaweb" ]; then
-	found_item "crontab/hestiaweb"
-	run_cmd "crontab -u hestiaweb -r 2>/dev/null || true"
-	run_cmd "rm -f /var/spool/cron/crontabs/hestiaweb"
-	removed_item "crontab/hestiaweb"
-fi
-
-# hestiamail crontab
-if [ -f "/var/spool/cron/crontabs/hestiamail" ]; then
-	found_item "crontab/hestiamail"
-	run_cmd "crontab -u hestiamail -r 2>/dev/null || true"
-	run_cmd "rm -f /var/spool/cron/crontabs/hestiamail"
-	removed_item "crontab/hestiamail"
-fi
-
-# Root crontab entries
-if crontab -l 2>/dev/null | grep -q "hestia\|/usr/local/hestia"; then
-	found_item "root crontab (HestiaCP entries)"
-	warn "Root crontab contains HestiaCP entries. Review manually with: crontab -l"
-fi
-
-# cron.d files
-for cronfile in /etc/cron.d/hestia*; do
-	if [ -f "$cronfile" ]; then
-		found_item "cron.d/$(basename "$cronfile")"
-		run_cmd "rm -f '$cronfile'"
-		removed_item "cron.d/$(basename "$cronfile")"
-	fi
-done
-
-# php-session-cleanup (HestiaCP-created)
-if [ -f "/etc/cron.daily/php-session-cleanup" ]; then
-	if is_hestia_file "/etc/cron.daily/php-session-cleanup"; then
-		found_item "cron.daily/php-session-cleanup"
-		run_cmd "rm -f /etc/cron.daily/php-session-cleanup"
-		removed_item "cron.daily/php-session-cleanup"
-	fi
-fi
-
-success "Crontab cleanup complete."
-
-# ----------------------------------------------------------
-# Phase 10: Systemd Cleanup
-# ----------------------------------------------------------
-
-step "Phase 10: Systemd service cleanup"
-
+# Systemd units
 HST_SYSTEMD_UNITS=(
 	"/etc/systemd/system/hestia.service"
 	"/etc/systemd/system/hestia-web-terminal.service"
 	"/etc/systemd/system/hestia-web-terminal.socket"
 )
-
 for unit in "${HST_SYSTEMD_UNITS[@]}"; do
 	if [ -f "$unit" ]; then
 		found_item "systemd/$(basename "$unit")"
@@ -680,29 +811,16 @@ for unit_file in $(find /etc/systemd/system/ -name "*.mount" 2>/dev/null | grep 
 	removed_item "systemd/$(basename "$unit_file")"
 done
 
-# Scan all systemd units for hestia references
-for unit in $(find /etc/systemd /lib/systemd /run/systemd -type f \( -name "*.service" -o -name "*.timer" -o -name "*.socket" -o -name "*.mount" \) 2>/dev/null); do
-	if is_hestia_file "$unit"; then
-		found_item "systemd/$(basename "$unit") (contains HestiaCP reference)"
-		warn "Systemd unit with HestiaCP reference: $unit (review manually)"
-	fi
-done
-
 run_cmd "systemctl daemon-reload"
-success "Systemd cleanup complete."
 
-# ----------------------------------------------------------
-# Phase 11: MOTD, Profile, Login Scripts
-# ----------------------------------------------------------
-
-step "Phase 11: MOTD and login script cleanup"
-
+# MOTD
 if [ -f "/etc/update-motd.d/99-hestia" ]; then
 	found_item "update-motd.d/99-hestia"
 	run_cmd "rm -f /etc/update-motd.d/99-hestia"
 	removed_item "update-motd.d/99-hestia"
 fi
 
+# Profile.d
 for f in /etc/profile.d/hestia*; do
 	if [ -f "$f" ]; then
 		found_item "profile.d/$(basename "$f")"
@@ -711,10 +829,9 @@ for f in /etc/profile.d/hestia*; do
 	fi
 done
 
+# Bash completion
 if [ -f "/etc/bash_completion.d/hestia" ]; then
-	found_item "bash_completion.d/hestia"
 	run_cmd "rm -f /etc/bash_completion.d/hestia"
-	removed_item "bash_completion.d/hestia"
 fi
 
 # Sudoers
@@ -726,45 +843,15 @@ for sudoers in /etc/sudoers.d/hestia* /etc/sudoers.d/hestiaweb; do
 	fi
 done
 
-success "Login script cleanup complete."
+success "Logrotate, systemd, MOTD & login scripts cleaned."
 
 # ----------------------------------------------------------
-# Phase 12: Users and Groups
+# Phase 8: Directories, APT repos, Firewall
 # ----------------------------------------------------------
 
-step "Phase 12: HestiaCP user and group cleanup"
+step "Phase 8: Directories, APT, firewall & temp files"
 
-HST_USERS=("hestiaweb" "hestiamail" "hestiasshd" "hestiadns" "hestia" "hestiaftp")
-HST_GROUPS=("hestiaweb" "hestiamail" "hestiasshd" "hestiadns" "hestia" "hestiaftp")
-
-for user in "${HST_USERS[@]}"; do
-	if id "$user" &>/dev/null; then
-		found_item "user: $user"
-		info "Removing user: $user"
-		run_cmd "userdel -f '$user' 2>/dev/null || true"
-		removed_item "user: $user"
-	fi
-done
-
-for group in "${HST_GROUPS[@]}"; do
-	if getent group "$group" &>/dev/null; then
-		found_item "group: $group"
-		info "Removing group: $group"
-		run_cmd "groupdel '$group' 2>/dev/null || true"
-		removed_item "group: $group"
-	fi
-done
-
-success "User and group cleanup complete."
-
-fi # end nginx-only guard
-
-# ----------------------------------------------------------
-# Phase 13: Directories & Packages
-# ----------------------------------------------------------
-
-step "Phase 13: Directory and package cleanup"
-
+# HestiaCP directories
 HST_DIRS=(
 	"/usr/local/hestia"
 	"/etc/hestiacp"
@@ -779,108 +866,45 @@ HST_DIRS=(
 for dir in "${HST_DIRS[@]}"; do
 	if [ -d "$dir" ]; then
 		found_item "$dir/"
-		if confirm "Remove directory $dir/?"; then
-			# Stop jail mount units if applicable
-			if echo "$dir" | grep -q "jail"; then
-				for unit in $(systemctl list-units --type=mount --no-legend 2>/dev/null | awk '{print $1}' | grep "srv-jail" 2>/dev/null); do
-					run_cmd "systemctl stop '$unit' 2>/dev/null || true"
-					run_cmd "systemctl disable '$unit' 2>/dev/null || true"
-				done
-				for uf in $(find /etc/systemd/system/ -name "*srv-jail*" -o -name "*srv--jail*" 2>/dev/null); do
-					run_cmd "rm -f '$uf'"
-				done
-				run_cmd "systemctl daemon-reload"
-			fi
-			run_cmd "rm -rf '$dir'"
-			removed_item "$dir/"
+		# Stop jail mounts if applicable
+		if echo "$dir" | grep -q "jail"; then
+			for unit in $(systemctl list-units --type=mount --no-legend 2>/dev/null | awk '{print $1}' | grep "srv-jail" 2>/dev/null); do
+				run_cmd "systemctl stop '$unit' 2>/dev/null || true"
+				run_cmd "systemctl disable '$unit' 2>/dev/null || true"
+			done
+			for uf in $(find /etc/systemd/system/ -name "*srv-jail*" -o -name "*srv--jail*" 2>/dev/null); do
+				run_cmd "rm -f '$uf'"
+			done
+			run_cmd "systemctl daemon-reload"
 		fi
+		run_cmd "rm -rf '$dir'"
+		removed_item "$dir/"
 	fi
 done
 
-# HestiaCP packages
-HST_PACKAGES=("hestia" "hestia-nginx" "hestia-php")
-for pkg in "${HST_PACKAGES[@]}"; do
-	if dpkg -l 2>/dev/null | grep -q "^ii.*$pkg "; then
-		found_item "package: $pkg"
-		info "Removing package: $pkg"
-		run_cmd "dpkg --purge '$pkg'"
-		removed_item "package: $pkg"
-	fi
-done
-
-# APT repo
+# APT repos
 for apt_file in /etc/apt/sources.list.d/hestia.list /etc/apt/sources.list.d/hestiacp.list; do
-	if [ -f "$apt_file" ]; then
-		found_item "apt: $(basename "$apt_file")"
-		run_cmd "rm -f '$apt_file'"
-		removed_item "apt: $(basename "$apt_file")"
-	fi
+	[ -f "$apt_file" ] && run_cmd "rm -f '$apt_file'" && removed_item "apt: $(basename "$apt_file")"
 done
-
 for gpg_file in /etc/apt/trusted.gpg.d/hestia* /usr/share/keyrings/hestia*; do
-	if [ -f "$gpg_file" ]; then
-		found_item "apt key: $(basename "$gpg_file")"
-		run_cmd "rm -f '$gpg_file'"
-		removed_item "apt key: $(basename "$gpg_file")"
-	fi
+	[ -f "$gpg_file" ] && run_cmd "rm -f '$gpg_file'" && removed_item "apt key: $(basename "$gpg_file")"
 done
-
-# APT preferences
 for pref in /etc/apt/preferences.d/hestia*; do
-	if [ -f "$pref" ]; then
-		found_item "apt pref: $(basename "$pref")"
-		run_cmd "rm -f '$pref'"
-		removed_item "apt pref: $(basename "$pref")"
-	fi
+	[ -f "$pref" ] && run_cmd "rm -f '$pref'" && removed_item "apt pref: $(basename "$pref")"
 done
 
-success "Directory and package cleanup complete."
-
-# ----------------------------------------------------------
-# Phase 14: Deep Scan (optional)
-# ----------------------------------------------------------
-
-if [ "$DEEP_SCAN" = true ]; then
-	step "Phase 14: Deep scan of /etc for HestiaCP references"
-
-	info "This may take a while..."
-	SCAN_COUNT=0
-
-	for f in $(find /etc -type f \( -name "*.conf" -o -name "*.inc" -o -name "*.cfg" -o -name "*.ini" -o -name "*.local" \) 2>/dev/null); do
-		if is_hestia_file "$f"; then
-			found_item "$f (deep scan)"
-			warn "HestiaCP reference found: $f"
-			SCAN_COUNT=$((SCAN_COUNT + 1))
-		fi
-	done
-
-	if [ "$SCAN_COUNT" -eq 0 ]; then
-		success "Deep scan: no HestiaCP references found in /etc."
-	else
-		warn "Deep scan: found $SCAN_COUNT file(s) with HestiaCP references. Review log for details."
-	fi
-fi
-
-# ----------------------------------------------------------
-# Firewall Rules Cleanup
-# ----------------------------------------------------------
-
-step "Cleaning HestiaCP firewall rules"
-
+# Firewall rules
 if command -v iptables &>/dev/null; then
 	for chain in HESTIA HESTIA_OUTPUT; do
 		if iptables -L "$chain" -n &>/dev/null; then
-			found_item "iptables chain: $chain"
 			run_cmd "iptables -F '$chain' 2>/dev/null || true"
 			run_cmd "iptables -X '$chain' 2>/dev/null || true"
 			removed_item "iptables chain: $chain"
 		fi
 	done
-
 	if command -v ip6tables &>/dev/null; then
 		for chain in HESTIA HESTIA_OUTPUT; do
 			if ip6tables -L "$chain" -n &>/dev/null; then
-				found_item "ip6tables chain: $chain"
 				run_cmd "ip6tables -F '$chain' 2>/dev/null || true"
 				run_cmd "ip6tables -X '$chain' 2>/dev/null || true"
 				removed_item "ip6tables chain: $chain"
@@ -888,68 +912,131 @@ if command -v iptables &>/dev/null; then
 		done
 	fi
 fi
-
 if command -v ipset &>/dev/null; then
 	for set_name in $(ipset list -n 2>/dev/null | grep -i hestia); do
-		found_item "ipset: $set_name"
 		run_cmd "ipset destroy '$set_name' 2>/dev/null || true"
 		removed_item "ipset: $set_name"
 	done
 fi
 
-success "Firewall cleanup complete."
-
-# ----------------------------------------------------------
-# Temporary Files
-# ----------------------------------------------------------
-
-step "Cleaning temporary files"
-
+# Temp files
 run_cmd "rm -f /tmp/hestia-*"
 run_cmd "rm -f /tmp/.hestia-*"
 
 # Dpkg diversions
 for diversion in $(dpkg-divert --list 2>/dev/null | grep -i hestia | awk '{print $3}'); do
-	found_item "dpkg diversion: $diversion"
 	run_cmd "dpkg-divert --remove --rename '$diversion'"
 	removed_item "dpkg diversion: $diversion"
 done
 
-success "Temporary files cleaned."
+success "Directories, APT, firewall & temp files cleaned."
+
+fi # end nginx-only guard
 
 # ----------------------------------------------------------
-# Restart Services
+# Phase 9: Deep Residue Scan
 # ----------------------------------------------------------
 
-step "Restarting services that may still be needed"
+step "Phase 9: Deep residue scan"
 
-RESTART_SERVICES=()
+info "Scanning entire system for remaining HestiaCP references..."
 
-if command -v nginx &>/dev/null && systemctl list-unit-files nginx.service &>/dev/null 2>&1; then
-	RESTART_SERVICES+=("nginx")
-fi
-if command -v apache2ctl &>/dev/null && systemctl list-unit-files apache2.service &>/dev/null 2>&1; then
-	RESTART_SERVICES+=("apache2")
-fi
-if systemctl is-enabled cron &>/dev/null 2>&1; then
-	RESTART_SERVICES+=("cron")
-fi
+RESIDUE_COUNT=0
 
-for svc in "${RESTART_SERVICES[@]}"; do
-	if systemctl is-enabled "$svc" &>/dev/null 2>&1; then
-		info "Restarting $svc..."
-		run_cmd "systemctl restart '$svc' 2>/dev/null || true"
-		SUMMARY+=("Restarted: $svc")
+# Scan /etc for hestia references
+for f in $(find /etc -type f \( -name "*.conf" -o -name "*.inc" -o -name "*.cfg" -o -name "*.ini" -o -name "*.local" -o -name "*.tpl" -o -name "*.stpl" \) 2>/dev/null); do
+	if is_hestia_file "$f" && [ "$f" != "/etc/hosts" ]; then
+		found_item "$f (residue)"
+		warn "Residue config: $f"
+		RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
 	fi
 done
 
-success "Services restarted."
+# Scan for broken nginx/apache SSL cert references anywhere
+for f in $(find /etc/nginx /etc/apache2 -type f 2>/dev/null); do
+	if grep -ql "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
+		found_item "$f (broken SSL cert path)"
+		error "BROKEN SSL CERT REFERENCE: $f"
+		RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
+	fi
+done
+
+# Scan systemd for hestia references
+for unit in $(find /etc/systemd /lib/systemd /run/systemd -type f \( -name "*.service" -o -name "*.timer" -o -name "*.socket" -o -name "*.mount" \) 2>/dev/null); do
+	if is_hestia_file "$unit"; then
+		found_item "$unit (systemd residue)"
+		warn "Systemd unit with HestiaCP reference: $unit"
+		RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
+	fi
+done
+
+# Scan crontabs
+if crontab -l 2>/dev/null | grep -q "hestia\|/usr/local/hestia"; then
+	found_item "root crontab (HestiaCP entries)"
+	RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
+fi
+
+# Scan for leftover /usr/local/hestia dir (should be removed in Phase 8)
+if [ -d "/usr/local/hestia" ]; then
+	found_item "/usr/local/hestia/ (still exists!)"
+	RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
+fi
+
+if [ "$RESIDUE_COUNT" -eq 0 ]; then
+	success "No remaining HestiaCP residue found!"
+else
+	warn "Found $RESIDUE_COUNT residue item(s). Review the log."
+fi
+
+# ----------------------------------------------------------
+# Final Service Verification
+# ----------------------------------------------------------
+
+step "Final service verification"
+
+echo ""
+echo -e "${BOLD}Service Status:${NC}"
+
+# Nginx
+if command -v nginx &>/dev/null; then
+	if systemctl is-active --quiet nginx 2>/dev/null; then
+		echo -e "  ${GREEN}✓${NC} nginx: running"
+	else
+		echo -e "  ${RED}✗${NC} nginx: NOT running"
+		# Show last error
+		if [ -f "/var/log/nginx/error.log" ]; then
+			last_err=$(tail -1 /var/log/nginx/error.log 2>/dev/null)
+			echo -e "    Last error: ${YELLOW}$last_err${NC}"
+		fi
+	fi
+else
+	echo -e "  ${YELLOW}-${NC} nginx: not installed"
+fi
+
+# Apache
+if command -v apache2ctl &>/dev/null; then
+	if systemctl is-active --quiet apache2 2>/dev/null; then
+		echo -e "  ${GREEN}✓${NC} apache2: running"
+	else
+		echo -e "  ${RED}✗${NC} apache2: NOT running"
+	fi
+else
+	echo -e "  ${YELLOW}-${NC} apache2: not installed"
+fi
+
+# Cron
+if systemctl is-active --quiet cron 2>/dev/null; then
+	echo -e "  ${GREEN}✓${NC} cron: running"
+else
+	echo -e "  ${RED}✗${NC} cron: NOT running"
+fi
+
+echo ""
 
 # ----------------------------------------------------------
 # Summary
 # ----------------------------------------------------------
 
-echo ""
 echo "========================================================"
 echo -e "${BOLD}${GREEN}  HestiaCP Deep Cleanup Complete${NC}"
 echo "========================================================"
@@ -962,30 +1049,21 @@ fi
 
 echo -e "${BOLD}Items found:${NC} ${#FOUND[@]}"
 echo -e "${BOLD}Items removed:${NC} ${#REMOVED[@]}"
+echo -e "${BOLD}Items fixed:${NC} ${#FIXED[@]}"
 echo ""
 
 if [ ${#REMOVED[@]} -gt 0 ]; then
-	echo -e "${BOLD}Removed items:${NC}"
+	echo -e "${BOLD}Removed:${NC}"
 	for item in "${REMOVED[@]}"; do
 		echo -e "  ${GREEN}✓${NC} $item"
 	done
 	echo ""
 fi
 
-if [ ${#FOUND[@]} -gt ${#REMOVED[@]} ]; then
-	echo -e "${YELLOW}Some items were found but not removed (manual review needed):${NC}"
-	for item in "${FOUND[@]}"; do
-		# Check if this item was removed
-		was_removed=false
-		for rem in "${REMOVED[@]}"; do
-			if [ "$item" = "$rem" ]; then
-				was_removed=true
-				break
-			fi
-		done
-		if [ "$was_removed" = false ]; then
-			echo -e "  ${YELLOW}!${NC} $item"
-		fi
+if [ ${#FIXED[@]} -gt 0 ]; then
+	echo -e "${BOLD}Fixed:${NC}"
+	for item in "${FIXED[@]}"; do
+		echo -e "  ${CYAN}⟳${NC} $item"
 	done
 	echo ""
 fi
