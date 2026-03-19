@@ -2,7 +2,7 @@
 
 # ======================================================== #
 #
-# Hestia Control Panel Uninstaller — v4.0 ULTIMATE
+# Hestia Control Panel Uninstaller — v5.0 ULTIMATE
 # Targets: 99.99% VPS recovery to pre-installation state
 #
 # Based on analysis of:
@@ -16,7 +16,7 @@
 #   - Real-time command output (tee to screen + log)
 #   - Progress bar with ETA
 #   - Auto-detects all installed components
-#   - Redirect loop fix for nginx/apache
+#   - Redirect loop fix for nginx/apache (handles ALL redirect patterns)
 #   - Pre-uninstall backup snapshot
 #   - Deep residue scanner
 #   - Network-informed package matching
@@ -33,7 +33,7 @@ set -uo pipefail
 # Global Settings
 # ----------------------------------------------------------
 
-readonly VERSION="4.0"
+readonly VERSION="5.0"
 readonly LOG_FILE="/var/log/hestia-uninstall.log"
 DRY_RUN=false
 FORCE=false
@@ -42,11 +42,11 @@ MONITOR=true
 STEP_COUNT=0
 TOTAL_STEPS=27
 START_TIME=$(date +%s)
-START_TIME_MS=$((START_TIME * 1000))
 SUMMARY=()
 WARNINGS=()
 RESIDUE_COUNT=0
 MONITOR_PID=""
+CPU_STATE_FILE=""
 
 # Colors
 readonly RED='\033[0;31m'
@@ -64,13 +64,29 @@ readonly BOLD='\033[1m'
 # Live Monitor Functions
 # ----------------------------------------------------------
 
-# CPU tracking state file (avoids blocking sleep in monitor loop)
-CPU_STATE_FILE="/tmp/.hestia-cpu-state-$$"
+# Detect terminal width and set monitor column
+detect_term_width() {
+    local cols
+    if [ -n "${COLUMNS:-}" ]; then
+        cols=$COLUMNS
+    elif command -v tput &>/dev/null; then
+        cols=$(tput cols 2>/dev/null || echo 80)
+    else
+        cols=80
+    fi
+    # Need at least 145 cols for side panel, otherwise fall back to inline
+    if [ "$cols" -ge 145 ]; then
+        echo $((cols - 44))
+    else
+        echo "0"  # 0 = no side panel, use inline
+    fi
+}
+
+MONITOR_COL=$(detect_term_width)
 
 get_cpu_usage_instant() {
     # Read /proc/stat snapshot, compare with previous reading
-    # Store previous reading in a temp file to avoid blocking sleep
-    local now idle total
+    local idle total
     read -r _ user nice system idle iowait irq softirq steal _ _ _ _ _ _ _ _ _ _ _ _ < /proc/stat
     total=$((user + nice + system + idle + iowait + irq + softirq + steal))
 
@@ -87,19 +103,9 @@ get_cpu_usage_instant() {
             echo $(( (diff_total - diff_idle) * 100 / diff_total ))
         fi
     else
-        # First reading — initialize and return 0
         echo "$idle $total" > "$CPU_STATE_FILE"
         echo "0"
     fi
-}
-
-get_cpu_per_core() {
-    # Return per-core usage as "core:usage" pairs
-    awk 'BEGIN{ORS=" "} /^cpu[0-9]/{
-        user=$2; nice=$3; sys=$4; idle=$5; iowait=$6; irq=$7; soft=$8; steal=$9
-        total=user+nice+sys+idle+iowait+irq+soft+steal
-        printf "%s:%d ", substr($1,4), (total-idle)*100/(total>0?total:1)
-    }' /proc/stat 2>/dev/null
 }
 
 get_ram_info() {
@@ -122,11 +128,6 @@ get_net_connections() {
     ss -s 2>/dev/null | awk '/^TCP:/{gsub(/,/,""); print $2}' || echo "0"
 }
 
-get_top_procs() {
-    # Return top 3 CPU-consuming processes
-    ps -eo comm,%cpu --sort=-%cpu --no-headers 2>/dev/null | head -3 | awk '{printf "%s(%s%%) ", $1, $2}'
-}
-
 format_eta() {
     local seconds=$1
     if [ "$seconds" -lt 0 ] 2>/dev/null; then echo "--"; return; fi
@@ -139,7 +140,21 @@ format_eta() {
     fi
 }
 
-draw_bar() {
+draw_bar_text() {
+    # Plain text bar (no colors) for monitor panel embedding
+    local pct=$1
+    local width=15
+    local filled=$((pct * width / 100))
+    local empty=$((width - filled))
+    local bar=""
+    local i
+    for ((i=0; i<filled; i++)); do bar+="█"; done
+    for ((i=0; i<empty; i++)); do bar+="░"; done
+    echo "$bar"
+}
+
+draw_bar_colored() {
+    # Colored bar for standalone display
     local pct=$1
     local width=20
     local filled=$((pct * width / 100))
@@ -148,7 +163,6 @@ draw_bar() {
     local i
     for ((i=0; i<filled; i++)); do bar+="█"; done
     for ((i=0; i<empty; i++)); do bar+="░"; done
-    # Color based on percentage
     if [ "$pct" -lt 60 ]; then
         echo -e "${GREEN}${bar}${NC}"
     elif [ "$pct" -lt 85 ]; then
@@ -159,10 +173,14 @@ draw_bar() {
 }
 
 monitor_loop() {
-    local update_count=0
+    # Prime CPU state (first read always returns 0)
+    get_cpu_usage_instant > /dev/null 2>&1
+    sleep 0.5  # Brief pause so second read has real data
+
+    local mc=$MONITOR_COL  # monitor column (0 = inline mode)
 
     while true; do
-        # Get metrics (non-blocking, no sleep in get_cpu_usage)
+        # Get metrics
         local cpu_now
         cpu_now=$(get_cpu_usage_instant)
 
@@ -190,7 +208,8 @@ monitor_loop() {
         conns=$(get_net_connections)
 
         # Calculate elapsed and ETA
-        local now=$(date +%s)
+        local now
+        now=$(date +%s)
         local elapsed=$((now - START_TIME))
         local eta_str="--"
         if [ "$STEP_COUNT" -gt 0 ] && [ "$elapsed" -gt 5 ]; then
@@ -200,36 +219,44 @@ monitor_loop() {
             eta_str=$(format_eta "$eta")
         fi
 
-        # Build dashboard
         local ts
         ts=$(date '+%H:%M:%S')
 
-        # Only update screen every 2 seconds to avoid flicker
-        update_count=$((update_count + 1))
-        if [ $((update_count % 2)) -eq 0 ]; then
-            # Save cursor position
+        if [ "$mc" -gt 0 ]; then
+            # Side panel mode (wide terminal)
+            local cpu_bar ram_bar dsk_bar
+            cpu_bar=$(draw_bar_text "$cpu_now")
+            ram_bar=$(draw_bar_text "$ram_pct")
+            dsk_bar=$(draw_bar_text "$disk_pct")
+
+            # Save cursor
             printf "\033[s"
 
-            # Draw monitor panel (positioned at column 101)
-            printf "\033[2;101H${DIM}┌─ LIVE MONITOR ──────────────────────────┐${NC}"
-            printf "\033[3;101H${DIM}│${NC} ${WHITE}CPU:${NC}  %3d%% $(draw_bar "$cpu_now" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}" "$cpu_now"
-            printf "\033[4;101H${DIM}│${NC} ${WHITE}RAM:${NC}  %3d%% %d/%dMB $(draw_bar "$ram_pct" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}" "$ram_pct" "$ram_used" "$ram_total"
-            printf "\033[5;101H${DIM}│${NC} ${WHITE}DSK:${NC}  %3d%% %s/%s $(draw_bar "$disk_pct" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}" "$disk_pct" "$disk_used" "$disk_total"
+            # Draw each line individually (no \n inside printf to keep position)
+            printf "\033[2;${mc}H${DIM}┌─ LIVE MONITOR ─────────────────────────────┐${NC}"
+            printf "\033[3;${mc}H${DIM}│${NC} ${WHITE}CPU:${NC}  %3d%% %s ${DIM}│${NC}" "$cpu_now" "$cpu_bar"
+            printf "\033[4;${mc}H${DIM}│${NC} ${WHITE}RAM:${NC}  %3d%% %4d/%-4dMB %s ${DIM}│${NC}" "$ram_pct" "$ram_used" "$ram_total" "$ram_bar"
+            printf "\033[5;${mc}H${DIM}│${NC} ${WHITE}DSK:${NC}  %3d%% %s/%s %s ${DIM}│${NC}" "$disk_pct" "$disk_used" "$disk_total" "$dsk_bar"
             if [ "$swap_total" -gt 0 ]; then
-                printf "\033[6;101H${DIM}│${NC} ${WHITE}SWP:${NC}  %d/%dMB${DIM}                       │${NC}" "$swap_used" "$swap_total"
+                printf "\033[6;${mc}H${DIM}│${NC} ${WHITE}SWP:${NC}  %4d/%-4dMB                           ${DIM}│${NC}" "$swap_used" "$swap_total"
             else
-                printf "\033[6;101H${DIM}│${NC} ${WHITE}SWP:${NC}  none${DIM}                            │${NC}"
+                printf "\033[6;${mc}H${DIM}│${NC} ${WHITE}SWP:${NC}  none                                    ${DIM}│${NC}"
             fi
-            printf "\033[7;101H${DIM}│${NC} ${WHITE}LOAD:${NC} %s${DIM}                       │${NC}" "$load"
-            printf "\033[8;101H${DIM}│${NC} ${WHITE}CONN:${NC} %s TCP${DIM}                    │${NC}" "$conns"
-            printf "\033[9;101H${DIM}│${NC} ${WHITE}STEP:${NC} %d/%d${DIM}                      │${NC}" "$STEP_COUNT" "$TOTAL_STEPS"
-            printf "\033[10;101H${DIM}│${NC} ${WHITE}ETA: ${NC} %s${DIM}                       │${NC}" "$eta_str"
-            printf "\033[11;101H${DIM}│${NC} ${WHITE}TIME:${NC} %s${DIM}                       │${NC}" "$ts"
-            printf "\033[12;101H${DIM}└─────────────────────────────────────────┘${NC}"
+            printf "\033[7;${mc}H${DIM}│${NC} ${WHITE}LOAD:${NC} %-15s                    ${DIM}│${NC}" "$load"
+            printf "\033[8;${mc}H${DIM}│${NC} ${WHITE}CONN:${NC} %s TCP                                 ${DIM}│${NC}" "$conns"
+            printf "\033[9;${mc}H${DIM}│${NC} ${WHITE}STEP:${NC} %d/%-2d                                  ${DIM}│${NC}" "$STEP_COUNT" "$TOTAL_STEPS"
+            printf "\033[10;${mc}H${DIM}│${NC} ${WHITE}ETA: ${NC} %-15s                    ${DIM}│${NC}" "$eta_str"
+            printf "\033[11;${mc}H${DIM}│${NC} ${WHITE}TIME:${NC} %s                                   ${DIM}│${NC}" "$ts"
+            printf "\033[12;${mc}H${DIM}└─────────────────────────────────────────────┘${NC}"
 
-            # Restore cursor position
+            # Restore cursor
             printf "\033[u"
         fi
+
+        # Always write to monitor state for inline status to pick up
+        cat > "$CPU_STATE_FILE.stats" <<EOF
+$cpu_now $ram_used $ram_pct $disk_pct $load $swap_used $swap_total $ts $STEP_COUNT $eta_str
+EOF
 
         sleep 1
     done
@@ -239,13 +266,18 @@ start_monitor() {
     if [ "$MONITOR" = false ] || [ "$DRY_RUN" = true ]; then
         return
     fi
-    # Initialize CPU state
+    # Create unique state files
+    CPU_STATE_FILE="/tmp/.hestia-cpu-state-$$"
+
+    # Prime CPU: do two reads 0.5s apart so first monitor read has real data
     get_cpu_usage_instant > /dev/null 2>&1
+    sleep 0.5
+    get_cpu_usage_instant > /dev/null 2>&1
+
     # Start monitor in background
     monitor_loop &
     MONITOR_PID=$!
-    # Ensure it gets cleaned up
-    trap 'stop_monitor' EXIT INT TERM
+    trap 'stop_monitor; exit' EXIT INT TERM HUP
 }
 
 stop_monitor() {
@@ -254,31 +286,41 @@ stop_monitor() {
         wait "$MONITOR_PID" 2>/dev/null
         MONITOR_PID=""
     fi
-    # Clean up state file
-    rm -f "$CPU_STATE_FILE" 2>/dev/null
-    # Clear monitor area
-    local i
-    for i in $(seq 2 12); do
-        printf "\033[${i};101H\033[K"
-    done
+    # Clean up state files
+    rm -f "$CPU_STATE_FILE" "$CPU_STATE_FILE.stats" 2>/dev/null
+    # Clear monitor area if side panel was used
+    if [ "$MONITOR_COL" -gt 0 ]; then
+        local i
+        for i in $(seq 2 12); do
+            printf "\033[${i};${MONITOR_COL}H\033[K"
+        done
+    fi
 }
 
 # ----------------------------------------------------------
-# Inline Status (for terminals < 140 cols or no-monitor mode)
+# Inline Status (for terminals < 145 cols or no-monitor mode)
 # ----------------------------------------------------------
 
 show_inline_status() {
-    local ram_info
-    ram_info=$(get_ram_info)
-    local ram_used=$(echo "$ram_info" | awk '{print $2}')
-    local ram_pct=$(echo "$ram_info" | awk '{print $3}')
-    local disk_pct=$(get_disk_info | awk '{print $3}')
-    local load
-    load=$(get_load_avg | awk '{print $1}')
-    local elapsed=$(($(date +%s) - START_TIME))
-
-    printf "  ${DIM}[%s] RAM:%dMB(%d%%) DSK:%s%% LOAD:%s ELAPSED:%s${NC}\n" \
-        "$(date '+%H:%M:%S')" "$ram_used" "$ram_pct" "$disk_pct" "$load" "$(format_eta $elapsed)"
+    # Try reading pre-computed stats from monitor process
+    if [ -n "$CPU_STATE_FILE" ] && [ -f "$CPU_STATE_FILE.stats" ]; then
+        local cpu_now ram_used ram_pct disk_pct load swap_used swap_total ts step eta_str
+        read -r cpu_now ram_used ram_pct disk_pct load swap_used swap_total ts step eta_str < "$CPU_STATE_FILE.stats"
+        printf "  ${DIM}[%s] CPU:%d%% RAM:%dMB(%d%%) DSK:%s%% LOAD:%s ELAPSED:%s${NC}\n" \
+            "$ts" "$cpu_now" "$ram_used" "$ram_pct" "$disk_pct" "$load" "$(format_eta $(($(date +%s) - START_TIME)))"
+    else
+        # Fallback: compute inline (slower but works without monitor)
+        local cpu_now ram_info ram_used ram_pct disk_pct load elapsed
+        cpu_now=$(get_cpu_usage_instant)
+        ram_info=$(get_ram_info)
+        ram_used=$(echo "$ram_info" | awk '{print $2}')
+        ram_pct=$(echo "$ram_info" | awk '{print $3}')
+        disk_pct=$(get_disk_info | awk '{print $3}')
+        load=$(get_load_avg | awk '{print $1}')
+        elapsed=$(($(date +%s) - START_TIME))
+        printf "  ${DIM}[%s] CPU:%d%% RAM:%dMB(%d%%) DSK:%s%% LOAD:%s ELAPSED:%s${NC}\n" \
+            "$(date '+%H:%M:%S')" "$cpu_now" "$ram_used" "$ram_pct" "$disk_pct" "$load" "$(format_eta $elapsed)"
+    fi
 }
 
 # ----------------------------------------------------------
@@ -438,6 +480,139 @@ remove_file() {
 }
 
 # ----------------------------------------------------------
+# Nginx/Apache Redirect Loop Fixer
+# ----------------------------------------------------------
+
+# Detects whether a file has a working HTTPS listener (listen 443 ssl + valid cert)
+has_working_ssl() {
+    local f="$1"
+    # Has listen 443 ssl that isn't commented out
+    if grep -qE '^\s*listen\s+.*443.*ssl' "$f" 2>/dev/null; then
+        # And has a non-commented SSL cert that exists
+        local cert
+        cert=$(grep -E '^\s*ssl_certificate[^_]' "$f" 2>/dev/null | head -1 | awk '{print $2}' | tr -d ';')
+        if [ -n "$cert" ] && [ -f "$cert" ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Fix ALL nginx redirect patterns (handles HestiaCP's specific patterns)
+fix_nginx_redirects() {
+    local f="$1"
+    local fixed=false
+
+    # HestiaCP pattern 1: location block with 'return 301 https://$host$request_uri;'
+    # This is the most common infinite-loop cause in HestiaCP
+    if grep -qE 'return\s+301\s+https://' "$f" 2>/dev/null; then
+        if ! has_working_ssl "$f"; then
+            if [ "$DRY_RUN" = false ]; then
+                # Match: any whitespace + return 301 https://...
+                sed -i 's|^\(\s*\)return 301 https://.*|\1## return 301 https:// (loop fix)|g' "$f"
+            fi
+            fixed=true
+        fi
+    fi
+
+    # HestiaCP pattern 2: return 302 redirects
+    if grep -qE 'return\s+302\s+https://' "$f" 2>/dev/null; then
+        if ! has_working_ssl "$f"; then
+            if [ "$DRY_RUN" = false ]; then
+                sed -i 's|^\(\s*\)return 302 https://.*|\1## return 302 https:// (loop fix)|g' "$f"
+            fi
+            fixed=true
+        fi
+    fi
+
+    # Pattern 3: rewrite ^ https://... redirect
+    if grep -qE 'rewrite\s+.*\s+https://' "$f" 2>/dev/null; then
+        if ! has_working_ssl "$f"; then
+            if [ "$DRY_RUN" = false ]; then
+                sed -i 's|^\(\s*\)rewrite\s.*https://.*|\1## rewrite https (loop fix)|g' "$f"
+            fi
+            fixed=true
+        fi
+    fi
+
+    # Pattern 4: if ($scheme != "https") { return 301 ... } blocks
+    if grep -qE "if\s*\(\s*\$scheme\s*!=\s*['\"]https['\"]\s*\)" "$f" 2>/dev/null; then
+        if ! has_working_ssl "$f"; then
+            if [ "$DRY_RUN" = false ]; then
+                # Remove the entire if block (lines from 'if ($scheme' to closing '}')
+                sed -i '/if\s*(\s*\$scheme\s*!=.*https/,/^[[:space:]]*}[[:space:]]*$/d' "$f"
+            fi
+            fixed=true
+        fi
+    fi
+
+    # Pattern 5: if ($http_x_forwarded_proto != "https") { ... }
+    if grep -qE "if\s*\(\s*\$http_x_forwarded_proto" "$f" 2>/dev/null; then
+        if ! has_working_ssl "$f"; then
+            if [ "$DRY_RUN" = false ]; then
+                sed -i '/if\s*(\s*\$http_x_forwarded_proto/,/^[[:space:]]*}[[:space:]]*$/d' "$f"
+            fi
+            fixed=true
+        fi
+    fi
+
+    if [ "$fixed" = true ]; then
+        add_summary "Fixed redirect loop: $(basename "$f")"
+        return 0
+    fi
+    return 1
+}
+
+# Fix ALL apache redirect patterns
+fix_apache_redirects() {
+    local f="$1"
+    local fixed=false
+
+    # Has SSL cert directive (non-commented)
+    local has_ssl=false
+    if grep -qE '^\s*SSLCertificateFile' "$f" 2>/dev/null; then
+        local cert
+        cert=$(grep -oP '(?<=SSLCertificateFile\s).*' "$f" 2>/dev/null | head -1 | tr -d '[:space:]')
+        [ -n "$cert" ] && [ -f "$cert" ] && has_ssl=true
+    fi
+
+    if [ "$has_ssl" = false ]; then
+        # Comment out broken SSL directives
+        if grep -qE '^\s*SSLCertificate' "$f" 2>/dev/null; then
+            if [ "$DRY_RUN" = false ]; then
+                sed -i 's|^\(\s*\)SSLCertificateFile|\1## SSLCertificateFile (removed)|g' "$f"
+                sed -i 's|^\(\s*\)SSLCertificateKeyFile|\1## SSLCertificateKeyFile (removed)|g' "$f"
+                sed -i 's|^\(\s*\)SSLCertificateChainFile|\1## SSLCertificateChainFile (removed)|g' "$f"
+            fi
+        fi
+
+        # Comment out redirects to HTTPS
+        if grep -qiE 'Redirect\s+.*https|RewriteRule.*https|RewriteCond.*HTTPS' "$f" 2>/dev/null; then
+            if [ "$DRY_RUN" = false ]; then
+                sed -i 's|^\(\s*\)Redirect\s.*https.*|\1## Redirect https (loop fix)|g' "$f"
+                sed -i 's|^\(\s*\)RewriteRule\s.*https.*|\1## RewriteRule https (loop fix)|g' "$f"
+                sed -i 's|^\(\s*\)RewriteCond\s.*HTTPS.*|\1## RewriteCond HTTPS (loop fix)|g' "$f"
+            fi
+            fixed=true
+        fi
+
+        # Remove Listen 443 if SSL is broken (port would fail to bind)
+        if grep -qE '^\s*Listen\s+443' "$f" 2>/dev/null; then
+            if [ "$DRY_RUN" = false ]; then
+                sed -i 's|^\(\s*\)Listen\s*443.*|\1## Listen 443 (removed, SSL broken)|g' "$f"
+            fi
+            fixed=true
+        fi
+    fi
+
+    if [ "$fixed" = true ]; then
+        add_summary "Fixed Apache redirect loop: $(basename "$f")"
+        return 0
+    fi
+    return 1
+}
+
+# ----------------------------------------------------------
 # Argument Parsing
 # ----------------------------------------------------------
 
@@ -495,7 +670,7 @@ echo -e "${NC}"
 mkdir -p "$(dirname "$LOG_FILE")"
 touch "$LOG_FILE"
 log "=== HestiaCP Uninstaller v${VERSION} Started ==="
-log "Force=$FORCE DryRun=$DRY_RUN DeepScan=$DEEP_SCAN Monitor=$MONITOR"
+log "Force=$FORCE DryRun=$DRY_RUN DeepScan=$DEEP_SCAN Monitor=$MONITOR TermCol=$MONITOR_COL"
 
 # Root check
 if [ "$(id -u)" -ne 0 ]; then
@@ -504,6 +679,10 @@ fi
 
 if [ "$DRY_RUN" = true ]; then
     warn "DRY-RUN MODE: No changes will be made."
+fi
+
+if [ "$MONITOR_COL" -eq 0 ] && [ "$MONITOR" = true ]; then
+    info "Terminal < 145 cols — using inline status bar"
 fi
 
 # ----------------------------------------------------------
@@ -628,7 +807,6 @@ fi
 # Start live monitor after confirmation
 if [ "$MONITOR" = true ] && [ "$DRY_RUN" = false ]; then
     start_monitor
-    trap 'stop_monitor; exit' EXIT INT TERM
 fi
 
 # Record disk space before uninstall
@@ -646,8 +824,12 @@ if [ "$DRY_RUN" = false ]; then
     mkdir -p "$BACKUP_DIR"
     for f in /etc/ssh/sshd_config /etc/hosts /etc/hostname /etc/fstab \
              /etc/nginx/nginx.conf /etc/mysql/my.cnf /etc/exim4/exim4.conf \
-             /etc/dovecot/dovecot.conf /etc/php/*/fpm/pool.d/www.conf; do
+             /etc/dovecot/dovecot.conf; do
         [ -f "$f" ] && cp "$f" "$BACKUP_DIR/$(basename "$f").bak"
+    done
+    # Backup PHP-FPM pool configs
+    for f in /etc/php/*/fpm/pool.d/www.conf; do
+        [ -f "$f" ] && cp "$f" "$BACKUP_DIR/$(basename "$(dirname "$(dirname "$f")")")-www.conf.bak"
     done
     [ -d /etc/nginx ] && cp -a /etc/nginx "$BACKUP_DIR/nginx.bak" 2>/dev/null || true
     [ -d /etc/apache2 ] && cp -a /etc/apache2 "$BACKUP_DIR/apache2.bak" 2>/dev/null || true
@@ -1008,27 +1190,16 @@ if [ -d "/etc/nginx" ]; then
         if grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
             info "Fixing broken SSL in: $(basename "$f")"
             if [ "$DRY_RUN" = false ]; then
-                sed -i 's|^\s*ssl_certificate[[:space:]]|## ssl_certificate (removed)|g' "$f"
-                sed -i 's|^\s*ssl_certificate_key[[:space:]]|## ssl_certificate_key (removed)|g' "$f"
-                sed -i 's|^\s*listen.*443.*ssl|## listen 443 ssl (removed)|g' "$f"
+                sed -i 's|^\(\s*\)ssl_certificate\b|## ssl_certificate (removed)|g' "$f"
+                sed -i 's|^\(\s*\)ssl_certificate_key\b|## ssl_certificate_key (removed)|g' "$f"
+                sed -i 's|^\(\s*\)listen\s\+.*443.*ssl|## listen 443 ssl (removed)|g' "$f"
             fi
         fi
     done < <(find /etc/nginx -type f -print0 2>/dev/null)
 
-    # Fix redirect loops (return 301/302 https when 443 is broken)
+    # Fix redirect loops using the dedicated function
     while IFS= read -r -d '' f; do
-        if grep -qiE "return 30[12] .*https|rewrite.*https" "$f" 2>/dev/null; then
-            if ! grep -qE "^\s*listen.*443.*ssl" "$f" 2>/dev/null || \
-               grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
-                warn "Redirect loop: $(basename "$f") — disabling HTTPS redirect"
-                if [ "$DRY_RUN" = false ]; then
-                    sed -i 's|^\s*return 301 https.*|## return 301 https (loop fix)|g' "$f"
-                    sed -i 's|^\s*return 302 https.*|## return 302 https (loop fix)|g' "$f"
-                    sed -i 's|^\s*rewrite .* https://.*|## rewrite https (loop fix)|g' "$f"
-                fi
-                add_summary "Fixed redirect loop: $(basename "$f")"
-            fi
-        fi
+        fix_nginx_redirects "$f"
     done < <(find /etc/nginx -type f \( -name "*.conf" -o -name "*.inc" \) -print0 2>/dev/null)
 
     # Restore nginx.conf if HestiaCP-modified
@@ -1104,24 +1275,9 @@ if [ -d "/etc/apache2" ]; then
         [ -f "$f" ] && grep -qi "hestia\|/usr/local/hestia" "$f" 2>/dev/null && run_cmd "rm -f '$f'"
     done
 
-    # Fix SSL + redirect loops using null-delimited find
+    # Fix SSL + redirect loops using dedicated function
     while IFS= read -r -d '' f; do
-        if grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
-            if [ "$DRY_RUN" = false ]; then
-                sed -i 's|^\s*SSLCertificateFile|## SSLCertificateFile (removed)|g' "$f"
-                sed -i 's|^\s*SSLCertificateKeyFile|## SSLCertificateKeyFile (removed)|g' "$f"
-            fi
-        fi
-        if grep -qiE "Redirect.*https|RewriteRule.*https" "$f" 2>/dev/null; then
-            if ! grep -qE "^\s*Listen 443" "$f" 2>/dev/null || \
-               grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
-                if [ "$DRY_RUN" = false ]; then
-                    sed -i 's|^\s*Redirect.*https.*|## Redirect https (loop fix)|g' "$f"
-                    sed -i 's|^\s*RewriteRule.*https.*|## RewriteRule https (loop fix)|g' "$f"
-                fi
-                add_summary "Fixed Apache redirect loop: $(basename "$f")"
-            fi
-        fi
+        fix_apache_redirects "$f"
     done < <(find /etc/apache2 -type f -print0 2>/dev/null)
 
     [ -f /etc/logrotate.d/apache2 ] && \
@@ -1616,7 +1772,7 @@ echo "  ════════════════════════
 log "=== Uninstall v${VERSION} completed in $(format_eta $TOTAL_TIME) ==="
 log "Residue: $RESIDUE_COUNT | Actions: ${#SUMMARY[@]} | Warnings: ${#WARNINGS[@]}"
 
-# Clean up monitor state file on exit
-rm -f "$CPU_STATE_FILE" 2>/dev/null
+# Clean up any remaining state files
+rm -f "$CPU_STATE_FILE" "$CPU_STATE_FILE.stats" 2>/dev/null
 
 exit 0
