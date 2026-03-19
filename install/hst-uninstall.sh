@@ -2,12 +2,12 @@
 
 # ======================================================== #
 #
-# Hestia Control Panel Uninstaller — v3.0 ULTIMATE
+# Hestia Control Panel Uninstaller — v4.0 ULTIMATE
 # Targets: 99.99% VPS recovery to pre-installation state
 #
 # Based on analysis of:
-#   - hestiacp/hestiacp hst-install-ubuntu.sh (88K)
-#   - hestiacp/hestiacp hst-install-debian.sh  (89K)
+#   - hestiacp/hestiacp hst-install-ubuntu.sh (full package list)
+#   - hestiacp/hestiacp hst-install-debian.sh  (full package list)
 #   - NIHAL276482/hestiacp original uninstaller
 #   - Reddit/forum community findings
 #
@@ -19,6 +19,7 @@
 #   - Redirect loop fix for nginx/apache
 #   - Pre-uninstall backup snapshot
 #   - Deep residue scanner
+#   - Network-informed package matching
 #
 # Usage:
 #   bash hst-uninstall.sh [--force] [--dry-run] [--deep-scan] [--no-monitor]
@@ -32,15 +33,16 @@ set -uo pipefail
 # Global Settings
 # ----------------------------------------------------------
 
-readonly VERSION="3.0"
+readonly VERSION="4.0"
 readonly LOG_FILE="/var/log/hestia-uninstall.log"
 DRY_RUN=false
 FORCE=false
 DEEP_SCAN=false
 MONITOR=true
 STEP_COUNT=0
-TOTAL_STEPS=25
+TOTAL_STEPS=27
 START_TIME=$(date +%s)
+START_TIME_MS=$((START_TIME * 1000))
 SUMMARY=()
 WARNINGS=()
 RESIDUE_COUNT=0
@@ -62,29 +64,50 @@ readonly BOLD='\033[1m'
 # Live Monitor Functions
 # ----------------------------------------------------------
 
-get_cpu_usage() {
-    # Read from /proc/stat for accurate per-second CPU
-    local cpu1 cpu2
-    cpu1=($(head -1 /proc/stat))
-    sleep 1
-    cpu2=($(head -1 /proc/stat))
+# CPU tracking state file (avoids blocking sleep in monitor loop)
+CPU_STATE_FILE="/tmp/.hestia-cpu-state-$$"
 
-    local idle1=${cpu1[4]} idle2=${cpu2[4]}
-    local total1=0 total2=0
-    for i in "${cpu1[@]:1}"; do total1=$((total1 + i)); done
-    for i in "${cpu2[@]:1}"; do total2=$((total2 + i)); done
+get_cpu_usage_instant() {
+    # Read /proc/stat snapshot, compare with previous reading
+    # Store previous reading in a temp file to avoid blocking sleep
+    local now idle total
+    read -r _ user nice system idle iowait irq softirq steal _ _ _ _ _ _ _ _ _ _ _ _ < /proc/stat
+    total=$((user + nice + system + idle + iowait + irq + softirq + steal))
 
-    local diff_idle=$((idle2 - idle1))
-    local diff_total=$((total2 - total1))
-    if [ "$diff_total" -eq 0 ]; then
-        echo "0"
+    if [ -f "$CPU_STATE_FILE" ]; then
+        local prev_idle prev_total
+        read -r prev_idle prev_total < "$CPU_STATE_FILE"
+        echo "$idle $total" > "$CPU_STATE_FILE"
+
+        local diff_idle=$((idle - prev_idle))
+        local diff_total=$((total - prev_total))
+        if [ "$diff_total" -eq 0 ]; then
+            echo "0"
+        else
+            echo $(( (diff_total - diff_idle) * 100 / diff_total ))
+        fi
     else
-        echo $(( (diff_total - diff_idle) * 100 / diff_total ))
+        # First reading — initialize and return 0
+        echo "$idle $total" > "$CPU_STATE_FILE"
+        echo "0"
     fi
+}
+
+get_cpu_per_core() {
+    # Return per-core usage as "core:usage" pairs
+    awk 'BEGIN{ORS=" "} /^cpu[0-9]/{
+        user=$2; nice=$3; sys=$4; idle=$5; iowait=$6; irq=$7; soft=$8; steal=$9
+        total=user+nice+sys+idle+iowait+irq+soft+steal
+        printf "%s:%d ", substr($1,4), (total-idle)*100/(total>0?total:1)
+    }' /proc/stat 2>/dev/null
 }
 
 get_ram_info() {
     awk '/^MemTotal/{t=$2} /^MemAvailable/{a=$2} END{printf "%d %d %d", t/1024, (t-a)/1024, ((t-a)*100/t)}' /proc/meminfo 2>/dev/null || echo "0 0 0"
+}
+
+get_swap_info() {
+    awk '/^SwapTotal/{t=$2} /^SwapFree/{f=$2} END{if(t>0) printf "%d %d %d", t/1024, (t-f)/1024, ((t-f)*100/t); else print "0 0 0"}' /proc/meminfo 2>/dev/null || echo "0 0 0"
 }
 
 get_disk_info() {
@@ -95,20 +118,18 @@ get_load_avg() {
     awk '{printf "%s %s %s", $1, $2, $3}' /proc/loadavg 2>/dev/null || echo "0 0 0"
 }
 
-get_io_stats() {
-    if [ -f /proc/diskstats ]; then
-        awk '$3 ~ /^(sda|vda|nvme0n1|xda)$/{printf "%s %s", $6, $10}' /proc/diskstats 2>/dev/null || echo "0 0"
-    else
-        echo "0 0"
-    fi
-}
-
 get_net_connections() {
     ss -s 2>/dev/null | awk '/^TCP:/{gsub(/,/,""); print $2}' || echo "0"
 }
 
+get_top_procs() {
+    # Return top 3 CPU-consuming processes
+    ps -eo comm,%cpu --sort=-%cpu --no-headers 2>/dev/null | head -3 | awk '{printf "%s(%s%%) ", $1, $2}'
+}
+
 format_eta() {
     local seconds=$1
+    if [ "$seconds" -lt 0 ] 2>/dev/null; then echo "--"; return; fi
     if [ "$seconds" -lt 60 ]; then
         echo "${seconds}s"
     elif [ "$seconds" -lt 3600 ]; then
@@ -138,21 +159,23 @@ draw_bar() {
 }
 
 monitor_loop() {
-    local prev_cpu=0
-    local prev_ram_used=0
-    local prev_disk_pct=0
     local update_count=0
 
     while true; do
-        # Get metrics
+        # Get metrics (non-blocking, no sleep in get_cpu_usage)
         local cpu_now
-        cpu_now=$(get_cpu_usage)
+        cpu_now=$(get_cpu_usage_instant)
 
         local ram_info
         ram_info=$(get_ram_info)
         local ram_total=$(echo "$ram_info" | awk '{print $1}')
         local ram_used=$(echo "$ram_info" | awk '{print $2}')
         local ram_pct=$(echo "$ram_info" | awk '{print $3}')
+
+        local swap_info
+        swap_info=$(get_swap_info)
+        local swap_used=$(echo "$swap_info" | awk '{print $2}')
+        local swap_total=$(echo "$swap_info" | awk '{print $1}')
 
         local disk_info
         disk_info=$(get_disk_info)
@@ -184,22 +207,28 @@ monitor_loop() {
         # Only update screen every 2 seconds to avoid flicker
         update_count=$((update_count + 1))
         if [ $((update_count % 2)) -eq 0 ]; then
-            # Move cursor to monitor position and draw
-            printf "\033[s" # Save cursor
-            printf "\033[2;60H" # Move to top-right area
+            # Save cursor position
+            printf "\033[s"
 
-            # Compact inline status bar
-            printf "${DIM}┌─ LIVE MONITOR ──────────────────────────┐${NC}\n"
-            printf "\033[2;101H${DIM}│${NC} ${WHITE}CPU:${NC}  %3d%% $(draw_bar "$cpu_now" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}\n" "$cpu_now"
-            printf "\033[3;101H${DIM}│${NC} ${WHITE}RAM:${NC}  %3d%% %d/%dMB $(draw_bar "$ram_pct" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}\n" "$ram_pct" "$ram_used" "$ram_total"
-            printf "\033[4;101H${DIM}│${NC} ${WHITE}DSK:${NC}  %3d%% %s/%s $(draw_bar "$disk_pct" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}\n" "$disk_pct" "$disk_used" "$disk_total"
-            printf "\033[5;101H${DIM}│${NC} ${WHITE}LOAD:${NC} %s${DIM}                       │${NC}\n" "$load"
-            printf "\033[6;101H${DIM}│${NC} ${WHITE}CONN:${NC} %s TCP${DIM}                    │${NC}\n" "$conns"
-            printf "\033[7;101H${DIM}│${NC} ${WHITE}STEP:${NC} %d/%d${DIM}                      │${NC}\n" "$STEP_COUNT" "$TOTAL_STEPS"
-            printf "\033[8;101H${DIM}│${NC} ${WHITE}ETA: ${NC} %s${DIM}                       │${NC}\n" "$eta_str"
-            printf "\033[9;101H${DIM}│${NC} ${WHITE}TIME:${NC} %s${DIM}                       │${NC}\n" "$ts"
-            printf "\033[10;101H${DIM}└─────────────────────────────────────────┘${NC}\n"
-            printf "\033[u" # Restore cursor
+            # Draw monitor panel (positioned at column 101)
+            printf "\033[2;101H${DIM}┌─ LIVE MONITOR ──────────────────────────┐${NC}"
+            printf "\033[3;101H${DIM}│${NC} ${WHITE}CPU:${NC}  %3d%% $(draw_bar "$cpu_now" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}" "$cpu_now"
+            printf "\033[4;101H${DIM}│${NC} ${WHITE}RAM:${NC}  %3d%% %d/%dMB $(draw_bar "$ram_pct" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}" "$ram_pct" "$ram_used" "$ram_total"
+            printf "\033[5;101H${DIM}│${NC} ${WHITE}DSK:${NC}  %3d%% %s/%s $(draw_bar "$disk_pct" | sed 's/\x1b\[[0-9;]*m//g')${DIM}│${NC}" "$disk_pct" "$disk_used" "$disk_total"
+            if [ "$swap_total" -gt 0 ]; then
+                printf "\033[6;101H${DIM}│${NC} ${WHITE}SWP:${NC}  %d/%dMB${DIM}                       │${NC}" "$swap_used" "$swap_total"
+            else
+                printf "\033[6;101H${DIM}│${NC} ${WHITE}SWP:${NC}  none${DIM}                            │${NC}"
+            fi
+            printf "\033[7;101H${DIM}│${NC} ${WHITE}LOAD:${NC} %s${DIM}                       │${NC}" "$load"
+            printf "\033[8;101H${DIM}│${NC} ${WHITE}CONN:${NC} %s TCP${DIM}                    │${NC}" "$conns"
+            printf "\033[9;101H${DIM}│${NC} ${WHITE}STEP:${NC} %d/%d${DIM}                      │${NC}" "$STEP_COUNT" "$TOTAL_STEPS"
+            printf "\033[10;101H${DIM}│${NC} ${WHITE}ETA: ${NC} %s${DIM}                       │${NC}" "$eta_str"
+            printf "\033[11;101H${DIM}│${NC} ${WHITE}TIME:${NC} %s${DIM}                       │${NC}" "$ts"
+            printf "\033[12;101H${DIM}└─────────────────────────────────────────┘${NC}"
+
+            # Restore cursor position
+            printf "\033[u"
         fi
 
         sleep 1
@@ -210,6 +239,8 @@ start_monitor() {
     if [ "$MONITOR" = false ] || [ "$DRY_RUN" = true ]; then
         return
     fi
+    # Initialize CPU state
+    get_cpu_usage_instant > /dev/null 2>&1
     # Start monitor in background
     monitor_loop &
     MONITOR_PID=$!
@@ -223,16 +254,13 @@ stop_monitor() {
         wait "$MONITOR_PID" 2>/dev/null
         MONITOR_PID=""
     fi
+    # Clean up state file
+    rm -f "$CPU_STATE_FILE" 2>/dev/null
     # Clear monitor area
-    printf "\033[2;101H\033[K"
-    printf "\033[3;101H\033[K"
-    printf "\033[4;101H\033[K"
-    printf "\033[5;101H\033[K"
-    printf "\033[6;101H\033[K"
-    printf "\033[7;101H\033[K"
-    printf "\033[8;101H\033[K"
-    printf "\033[9;101H\033[K"
-    printf "\033[10;101H\033[K"
+    local i
+    for i in $(seq 2 12); do
+        printf "\033[${i};101H\033[K"
+    done
 }
 
 # ----------------------------------------------------------
@@ -249,7 +277,7 @@ show_inline_status() {
     load=$(get_load_avg | awk '{print $1}')
     local elapsed=$(($(date +%s) - START_TIME))
 
-    printf "  ${DIM}[%s] CPU:checking RAM:%dMB(%d%%) DSK:%s%% LOAD:%s ELAPSED:%s${NC}\n" \
+    printf "  ${DIM}[%s] RAM:%dMB(%d%%) DSK:%s%% LOAD:%s ELAPSED:%s${NC}\n" \
         "$(date '+%H:%M:%S')" "$ram_used" "$ram_pct" "$disk_pct" "$load" "$(format_eta $elapsed)"
 }
 
@@ -280,6 +308,11 @@ warn() {
 error() {
     echo -e "  ${RED}✗${NC} $1"
     log "[ERROR] $1"
+}
+
+fatal() {
+    error "$1"
+    exit 1
 }
 
 step() {
@@ -345,7 +378,8 @@ run_progress() {
     if [ $rc -eq 0 ]; then
         printf "\r  ${GREEN}✓${NC} $msg... done        \n"
     else
-        printf "\r  ${GREEN}✓${NC} $msg... done        \n"
+        printf "\r  ${YELLOW}⚠${NC} $msg... failed (rc=$rc) \n"
+        log "[WARN] $msg failed with rc=$rc"
     fi
 }
 
@@ -384,14 +418,15 @@ remove_pkg_pattern() {
 }
 
 remove_dir() {
-    local dir="$1"
-    if [ -d "$dir" ]; then
-        local size
-        size=$(du -sh "$dir" 2>/dev/null | awk '{print $1}')
-        info "Removing: $dir (${size:-?})"
-        run_cmd "rm -rf '$dir'"
-        add_summary "Removed: $dir"
-    fi
+    for dir in "$@"; do
+        if [ -d "$dir" ]; then
+            local size
+            size=$(du -sh "$dir" 2>/dev/null | awk '{print $1}')
+            info "Removing: $dir (${size:-?})"
+            run_cmd "rm -rf '$dir'"
+            add_summary "Removed: $dir"
+        fi
+    done
 }
 
 remove_file() {
@@ -416,6 +451,9 @@ while [[ $# -gt 0 ]]; do
             DEEP_SCAN=true; shift ;;
         --no-monitor)
             MONITOR=false; shift ;;
+        --version|-v)
+            echo "HestiaCP Uninstaller v${VERSION}"
+            exit 0 ;;
         --help|-h)
             echo -e "${BOLD}HestiaCP Uninstaller v${VERSION}${NC}"
             echo ""
@@ -426,7 +464,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --dry-run, -n     Preview without making changes"
             echo "  --deep-scan       Extended filesystem residue scan"
             echo "  --no-monitor      Disable live CPU/RAM dashboard"
+            echo "  --version, -v     Show version"
             echo "  --help, -h        Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  bash hst-uninstall.sh                    # Interactive"
+            echo "  bash hst-uninstall.sh --force            # No prompts"
+            echo "  bash hst-uninstall.sh --dry-run          # Preview only"
+            echo "  bash hst-uninstall.sh --force --deep     # Force + deep scan"
             exit 0 ;;
         *)
             error "Unknown option: $1"
@@ -454,8 +499,7 @@ log "Force=$FORCE DryRun=$DRY_RUN DeepScan=$DEEP_SCAN Monitor=$MONITOR"
 
 # Root check
 if [ "$(id -u)" -ne 0 ]; then
-    error "Must run as root: bash $0"
-    exit 1
+    fatal "Must run as root: bash $0"
 fi
 
 if [ "$DRY_RUN" = true ]; then
@@ -482,12 +526,11 @@ if [ -e "/etc/os-release" ]; then
     case "$os_id" in
         debian) OS_TYPE="debian"; OS_VERSION="$os_version_id" ;;
         ubuntu) OS_TYPE="ubuntu"; OS_VERSION="$os_version_id" ;;
-        *) error "Unsupported OS: $os_id (only Debian/Ubuntu)"; exit 1 ;;
+        *) fatal "Unsupported OS: $os_id (only Debian/Ubuntu)" ;;
     esac
     success "Detected: ${OS_TYPE} ${OS_VERSION} (${OS_CODENAME:-unknown})"
 else
-    error "Cannot detect OS: /etc/os-release not found"
-    exit 1
+    fatal "Cannot detect OS: /etc/os-release not found"
 fi
 
 # System info (real values)
@@ -601,13 +644,18 @@ step "Creating pre-uninstall backup"
 BACKUP_DIR="/root/hestia-uninstall-backup-$(date +%Y%m%d%H%M%S)"
 if [ "$DRY_RUN" = false ]; then
     mkdir -p "$BACKUP_DIR"
-    for f in /etc/ssh/sshd_config /etc/hosts /etc/hostname /etc/fstab /etc/nginx/nginx.conf; do
+    for f in /etc/ssh/sshd_config /etc/hosts /etc/hostname /etc/fstab \
+             /etc/nginx/nginx.conf /etc/mysql/my.cnf /etc/exim4/exim4.conf \
+             /etc/dovecot/dovecot.conf /etc/php/*/fpm/pool.d/www.conf; do
         [ -f "$f" ] && cp "$f" "$BACKUP_DIR/$(basename "$f").bak"
     done
     [ -d /etc/nginx ] && cp -a /etc/nginx "$BACKUP_DIR/nginx.bak" 2>/dev/null || true
     [ -d /etc/apache2 ] && cp -a /etc/apache2 "$BACKUP_DIR/apache2.bak" 2>/dev/null || true
+    [ -d /etc/mysql ] && cp -a /etc/mysql "$BACKUP_DIR/mysql.bak" 2>/dev/null || true
+    [ -d /etc/php ] && cp -a /etc/php "$BACKUP_DIR/php.bak" 2>/dev/null || true
     iptables-save > "$BACKUP_DIR/iptables.bak" 2>/dev/null || true
     ip6tables-save > "$BACKUP_DIR/ip6tables.bak" 2>/dev/null || true
+    crontab -l > "$BACKUP_DIR/root-crontab.bak" 2>/dev/null || true
     success "Backup: ${BACKUP_DIR}"
     add_summary "Backup: ${BACKUP_DIR}"
 else
@@ -630,7 +678,7 @@ stop_service() {
 }
 
 # HestiaCP core
-for svc in hestia hestia-web-terminal hestia-web-terminal.socket; do
+for svc in hestia hestia-nginx hestia-php hestia-web-terminal hestia-web-terminal.socket; do
     stop_service "$svc"
 done
 
@@ -661,7 +709,7 @@ success "All services stopped"
 
 step "Removing HestiaCP core packages"
 
-for pkg in hestia hestia-nginx hestia-php hestia-web-terminal; do
+for pkg in hestia hestia-nginx hestia-php hestia-web-terminal hestia-common; do
     if dpkg -l 2>/dev/null | grep -q "^ii.*[[:space:]]${pkg}[[:space:]]"; then
         run_verbose "dpkg --purge '$pkg'"
         add_summary "Purged: $pkg"
@@ -682,21 +730,18 @@ remove_pkg_pattern "^php"
 
 # MySQL/MariaDB
 info "MySQL/MariaDB..."
-for pkg in mariadb-server mariadb-client mariadb-common libmariadb3 \
+for pkg in mariadb-server mariadb-client mariadb-common libmariadb3 mariadb-client-core \
            mysql-server mysql-client mysql-common libmysqlclient21; do
     remove_pkg "$pkg"
 done
-remove_dir "/etc/mysql"
-remove_dir "/var/lib/mysql"
-remove_dir "/var/log/mysql"
+remove_dir "/etc/mysql" "/var/lib/mysql" "/var/log/mysql"
 
 # PostgreSQL
 info "PostgreSQL..."
 for pkg in postgresql postgresql-common postgresql-client postgresql-contrib; do
     remove_pkg "$pkg"
 done
-remove_dir "/etc/postgresql"
-remove_dir "/var/lib/postgresql"
+remove_dir "/etc/postgresql" "/var/lib/postgresql"
 
 # Mail
 info "Mail (Exim4 + Dovecot)..."
@@ -705,23 +750,20 @@ for pkg in exim4 exim4-base exim4-config exim4-daemon-heavy exim4-daemon-light \
            dovecot-sieve dovecot-lmtpd; do
     remove_pkg "$pkg"
 done
-remove_dir "/etc/exim4"
-remove_dir "/etc/dovecot"
+remove_dir "/etc/exim4" "/etc/dovecot"
 
 # ClamAV
 info "ClamAV..."
 for pkg in clamav-daemon clamav-freshclam clamav clamav-base libclamav; do
     remove_pkg "$pkg"
 done
-remove_dir "/etc/clamav"
-remove_dir "/var/lib/clamav"
+remove_dir "/etc/clamav" "/var/lib/clamav"
 
 # SpamAssassin (Ubuntu=spamassassin, Debian=spamd)
 info "SpamAssassin..."
 remove_pkg "spamassassin"
 remove_pkg "spamd"
-remove_dir "/etc/spamassassin"
-remove_dir "/var/lib/spamassassin"
+remove_dir "/etc/spamassassin" "/var/lib/spamassassin"
 
 # DNS
 info "Bind9..."
@@ -752,19 +794,28 @@ done
 remove_dir "/etc/roundcube" "/etc/phpmyadmin" "/etc/phppgadmin"
 remove_dir "/usr/share/roundcube" "/usr/share/phpmyadmin" "/usr/share/phppgadmin"
 
-# Misc
+# Misc — from hst-install-ubuntu.sh package list
 info "Misc packages..."
 for pkg in imagemagick rrdtool awstats libapache2-mod-fcgid libapache2-mod-rpaf \
            bubblewrap restic quota expect at sysstat bsdmainutils \
-           libapache2-mpm-itk libmail-dkim-perl net-tools unrar-free; do
+           libapache2-mpm-itk libmail-dkim-perl net-tools unrar-free \
+           acl apache2-suexec-custom apache2-utils apparmor-utils \
+           bc bsdutils idn2 jq libonig5 libzip4 lsb-release lsof mc; do
     remove_pkg "$pkg"
 done
 remove_dir "/var/lib/rrd" "/var/lib/awstats" "/etc/awstats" "/etc/php"
 
+# Apache-specific lib modules
+remove_pkg_pattern "^libapache2-mod-"
+
 # Node.js
-if [ -f "/etc/apt/sources.list.d/nodejs.list" ]; then
+if [ -f "/etc/apt/sources.list.d/nodejs.list" ] || [ -f "/etc/apt/sources.list.d/nodesource.list" ]; then
     remove_pkg "nodejs"
 fi
+
+# vim-common (hestia installs it)
+remove_pkg "vim-common"
+remove_pkg "unzip"
 
 success "All service packages removed"
 
@@ -779,6 +830,7 @@ for repo in /etc/apt/sources.list.d/nginx.list \
             /etc/apt/sources.list.d/hestiacp.list \
             /etc/apt/sources.list.d/mariadb.list \
             /etc/apt/sources.list.d/nodejs.list \
+            /etc/apt/sources.list.d/nodesource.list \
             /etc/apt/sources.list.d/postgresql.list \
             /etc/apt/sources.list.d/apache2.list; do
     remove_file "$repo"
@@ -797,10 +849,11 @@ for keyring in /usr/share/keyrings/nginx-keyring.gpg \
                /usr/share/keyrings/hestia-keyring.asc \
                /usr/share/keyrings/mariadb-keyring.gpg \
                /usr/share/keyrings/nodejs.gpg \
+               /usr/share/keyrings/nodesource.gpg \
                /usr/share/keyrings/postgresql-keyring.gpg; do
     [ -e "$keyring" ] && remove_file "$keyring"
 done
-run_cmd "rm -f /etc/apt/trusted.gpg.d/hestia*"
+run_cmd "rm -f /etc/apt/trusted.gpg.d/hestia* /etc/apt/trusted.gpg.d/nodesource*"
 
 # apt configs
 remove_file "/etc/apt/apt.conf.d/80-retries"
@@ -864,11 +917,9 @@ success "Users and groups removed"
 
 step "Removing HestiaCP directories"
 
-for dir in "$HESTIA" /etc/hestiacp /root/hst_backups /root/hst_install_backups \
-           /usr/share/hestia /var/cache/hestia /var/run/hestia \
-           /var/log/hestia /var/lib/hestia; do
-    remove_dir "$dir"
-done
+remove_dir "$HESTIA" "/etc/hestiacp" "/root/hst_backups" "/root/hst_install_backups" \
+           "/usr/share/hestia" "/var/cache/hestia" "/var/run/hestia" \
+           "/var/log/hestia" "/var/lib/hestia"
 
 # Chroot jails
 if [ -d "/srv/jail" ]; then
@@ -881,6 +932,11 @@ if [ -d "/srv/jail" ]; then
     remove_dir "/srv/jail"
 fi
 
+# Bubblewrap jails
+if [ -d "/var/lib/bubblewrap" ]; then
+    remove_dir "/var/lib/bubblewrap"
+fi
+
 run_cmd "rm -f /tmp/hestia-* /tmp/hst-*"
 success "Directories removed"
 
@@ -891,6 +947,8 @@ success "Directories removed"
 step "Removing systemd units"
 
 for unit in /etc/systemd/system/hestia.service \
+            /etc/systemd/system/hestia-nginx.service \
+            /etc/systemd/system/hestia-php.service \
             /etc/systemd/system/hestia-web-terminal.service \
             /etc/systemd/system/hestia-web-terminal.socket; do
     if [ -f "$unit" ]; then
@@ -946,8 +1004,7 @@ if [ -d "/etc/nginx" ]; then
     done
 
     # Fix SSL cert references in ALL nginx configs
-    for f in $(find /etc/nginx -type f 2>/dev/null); do
-        [ -f "$f" ] || continue
+    while IFS= read -r -d '' f; do
         if grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
             info "Fixing broken SSL in: $(basename "$f")"
             if [ "$DRY_RUN" = false ]; then
@@ -956,11 +1013,10 @@ if [ -d "/etc/nginx" ]; then
                 sed -i 's|^\s*listen.*443.*ssl|## listen 443 ssl (removed)|g' "$f"
             fi
         fi
-    done
+    done < <(find /etc/nginx -type f -print0 2>/dev/null)
 
     # Fix redirect loops (return 301/302 https when 443 is broken)
-    for f in $(find /etc/nginx -type f -name "*.conf" -o -name "*.inc" 2>/dev/null); do
-        [ -f "$f" ] || continue
+    while IFS= read -r -d '' f; do
         if grep -qiE "return 30[12] .*https|rewrite.*https" "$f" 2>/dev/null; then
             if ! grep -qE "^\s*listen.*443.*ssl" "$f" 2>/dev/null || \
                grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
@@ -973,7 +1029,7 @@ if [ -d "/etc/nginx" ]; then
                 add_summary "Fixed redirect loop: $(basename "$f")"
             fi
         fi
-    done
+    done < <(find /etc/nginx -type f \( -name "*.conf" -o -name "*.inc" \) -print0 2>/dev/null)
 
     # Restore nginx.conf if HestiaCP-modified
     if [ ! -f /etc/nginx/nginx.conf ] || \
@@ -1023,8 +1079,7 @@ NGINX_DEFAULT
     [ -f /etc/logrotate.d/nginx ] && \
         grep -qi "hestia" /etc/logrotate.d/nginx 2>/dev/null && run_cmd "rm -f /etc/logrotate.d/nginx"
 
-    remove_dir "/var/log/nginx/domains"
-    remove_dir "/usr/local/hestia/ssl"
+    remove_dir "/var/log/nginx/domains" "/usr/local/hestia/ssl"
 
     success "Nginx restored"
 else
@@ -1049,9 +1104,8 @@ if [ -d "/etc/apache2" ]; then
         [ -f "$f" ] && grep -qi "hestia\|/usr/local/hestia" "$f" 2>/dev/null && run_cmd "rm -f '$f'"
     done
 
-    # Fix SSL + redirect loops
-    for f in $(find /etc/apache2 -type f 2>/dev/null); do
-        [ -f "$f" ] || continue
+    # Fix SSL + redirect loops using null-delimited find
+    while IFS= read -r -d '' f; do
         if grep -q "/usr/local/hestia/ssl/" "$f" 2>/dev/null; then
             if [ "$DRY_RUN" = false ]; then
                 sed -i 's|^\s*SSLCertificateFile|## SSLCertificateFile (removed)|g' "$f"
@@ -1068,7 +1122,7 @@ if [ -d "/etc/apache2" ]; then
                 add_summary "Fixed Apache redirect loop: $(basename "$f")"
             fi
         fi
-    done
+    done < <(find /etc/apache2 -type f -print0 2>/dev/null)
 
     [ -f /etc/logrotate.d/apache2 ] && \
         grep -qi "hestia" /etc/logrotate.d/apache2 2>/dev/null && run_cmd "rm -f /etc/logrotate.d/apache2"
@@ -1141,6 +1195,12 @@ if [ -f /etc/bash.bashrc ] && grep -q "hestia\|v-alias\|v-add" /etc/bash.bashrc 
         sed -i '/hestia/d; /v-alias/d; /v-add.*-cron/d' /etc/bash.bashrc
     fi
 fi
+
+# Clean user bashrc files
+for admin_home in /home/*/; do
+    [ -f "${admin_home}.bashrc" ] && grep -q "hestia\|v-alias\|v-add" "${admin_home}.bashrc" 2>/dev/null && \
+        [ "$DRY_RUN" = false ] && sed -i '/hestia/d; /v-alias/d' "${admin_home}.bashrc"
+done
 
 # Logrotate
 for lr in /etc/logrotate.d/hestia /etc/logrotate.d/dovecot /etc/logrotate.d/roundcube; do
@@ -1282,6 +1342,12 @@ remove_file "/etc/security/limits.d/99-hestia.conf"
 remove_file "/etc/sysctl.d/99-hestia.conf"
 [ -f /etc/sysctl.d/99-hestia.conf ] && run_cmd "sysctl --system 2>/dev/null || true"
 
+# PAM hestia entries
+for f in /etc/pam.d/common-*; do
+    [ -f "$f" ] && grep -q "hestia" "$f" 2>/dev/null && \
+        [ "$DRY_RUN" = false ] && sed -i '/hestia/d' "$f"
+done
+
 success "Security configs cleaned"
 
 # ----------------------------------------------------------
@@ -1318,16 +1384,21 @@ fi
 
 step "Final config sweep"
 
-for dir in /etc/exim4 /etc/dovecot /etc/bind /etc/vsftpd /etc/proftpd \
-           /etc/clamav /etc/spamassassin /etc/mysql /etc/postgresql; do
-    remove_dir "$dir"
-done
+remove_dir "/etc/exim4" "/etc/dovecot" "/etc/bind" "/etc/vsftpd" "/etc/proftpd" \
+           "/etc/clamav" "/etc/spamassassin" "/etc/mysql" "/etc/postgresql"
 
 # Let's Encrypt leftovers
 remove_dir "/etc/letsencrypt"
 
 # Fail2Ban remnants
 [ -d /etc/fail2ban ] && remove_dir "/etc/fail2ban"
+
+# PHP config residue
+[ -d /etc/php ] && remove_dir "/etc/php"
+
+# Apache module residue
+[ -d /etc/apache2/conf-available ] && \
+    find /etc/apache2/conf-available -name '*hestia*' -delete 2>/dev/null || true
 
 success "Config sweep complete"
 
@@ -1392,32 +1463,32 @@ step "Deep residue scan"
 
 RESIDUE_COUNT=0
 
-# /etc configs
-for f in $(find /etc -type f \( -name "*.conf" -o -name "*.inc" -o -name "*.tpl" \) 2>/dev/null | head -500); do
+# /etc configs (null-delimited find for safety)
+while IFS= read -r -d '' f; do
     grep -ql "hestia\|/usr/local/hestia\|HESTIA=" "$f" 2>/dev/null && {
         warn "Residue: $f"
         RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
     }
-done
+done < <(find /etc -maxdepth 3 -type f \( -name "*.conf" -o -name "*.inc" -o -name "*.tpl" \) -print0 2>/dev/null)
 
 # Broken SSL
-for f in $(find /etc/nginx /etc/apache2 -type f 2>/dev/null); do
+while IFS= read -r -d '' f; do
     grep -ql "/usr/local/hestia/ssl/" "$f" 2>/dev/null && {
         error "BROKEN SSL: $f"
         RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
     }
-done
+done < <(find /etc/nginx /etc/apache2 -type f -print0 2>/dev/null)
 
 # Cron
 crontab -l 2>/dev/null | grep -q "hestia" && { warn "Root crontab residue"; RESIDUE_COUNT=$((RESIDUE_COUNT + 1)); }
 
 # Systemd
-for unit in $(find /etc/systemd /lib/systemd -type f 2>/dev/null | head -200); do
-    grep -ql "hestia\|/usr/local/hestia" "$unit" 2>/dev/null && {
-        warn "Residue systemd: $unit"
+while IFS= read -r -d '' f; do
+    grep -ql "hestia\|/usr/local/hestia" "$f" 2>/dev/null && {
+        warn "Residue systemd: $f"
         RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
     }
-done
+done < <(find /etc/systemd /lib/systemd -type f -print0 2>/dev/null)
 
 # Directories
 [ -d /usr/local/hestia ] && { warn "Still exists: /usr/local/hestia"; RESIDUE_COUNT=$((RESIDUE_COUNT + 1)); }
@@ -1430,15 +1501,20 @@ for f in /etc/apt/sources.list.d/*; do
     }
 done
 
+# systemd drop-ins
+for f in /etc/systemd/system/*/hestia*; do
+    [ -e "$f" ] && { warn "Residue drop-in: $f"; RESIDUE_COUNT=$((RESIDUE_COUNT + 1)); }
+done
+
 # Extended deep scan
 if [ "$DEEP_SCAN" = true ]; then
     substep "Extended scan..."
-    for f in $(find /var -type f -name "*.conf" 2>/dev/null | head -500); do
+    while IFS= read -r -d '' f; do
         grep -ql "hestia\|/usr/local/hestia" "$f" 2>/dev/null && {
             warn "Deep residue: $f"
             RESIDUE_COUNT=$((RESIDUE_COUNT + 1))
         }
-    done
+    done < <(find /var -maxdepth 4 -type f -name "*.conf" -print0 2>/dev/null)
 fi
 
 if [ "$RESIDUE_COUNT" -eq 0 ]; then
@@ -1503,6 +1579,7 @@ fi
 
 echo ""
 echo -e "  ${BOLD}Actions (${#SUMMARY[@]}):${NC}"
+
 for item in "${SUMMARY[@]}"; do
     echo -e "    ${GREEN}✓${NC} $item"
 done
@@ -1538,5 +1615,8 @@ echo "  ════════════════════════
 
 log "=== Uninstall v${VERSION} completed in $(format_eta $TOTAL_TIME) ==="
 log "Residue: $RESIDUE_COUNT | Actions: ${#SUMMARY[@]} | Warnings: ${#WARNINGS[@]}"
+
+# Clean up monitor state file on exit
+rm -f "$CPU_STATE_FILE" 2>/dev/null
 
 exit 0
