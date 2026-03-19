@@ -116,7 +116,7 @@ prepare_web_backend() {
 	fi
 
 	if [ ! -e "$pool" ]; then
-		check_result $E_NOTEXIST "php-fpm pool doesn't exist"
+		check_result "$E_NOTEXIST" "php-fpm pool doesn't exist"
 	fi
 	backend_type="$domain"
 	if [ "$WEB_BACKEND_POOL" = 'user' ]; then
@@ -346,7 +346,7 @@ get_web_config_lines() {
 	tpl_lines=$(echo "$tpl_lines" | cut -f 1 -d :)
 	tpl_last_line=$(wc -l $1 | cut -f 1 -d ' ')
 	if [ -z "$tpl_lines" ]; then
-		check_result $E_PARSING "can't parse template $1"
+		check_result "$E_PARSING" "can't parse template $1"
 	fi
 
 	domain_idn=$domain
@@ -355,7 +355,7 @@ get_web_config_lines() {
 	vhost_lines=$(echo "$vhost_lines" | egrep "$domain_idn($| |;)")
 	vhost_lines=$(echo "$vhost_lines" | cut -f 1 -d :)
 	if [ -z "$vhost_lines" ]; then
-		check_result $E_PARSING "can't parse config $2"
+		check_result "$E_PARSING" "can't parse config $2"
 	fi
 
 	top_line=$((vhost_lines + 1 - tpl_lines))
@@ -719,7 +719,7 @@ is_mail_domain_new() {
 	mail=$(ls $HESTIA/data/users/*/mail/$1.conf 2> /dev/null)
 	if [ -n "$mail" ]; then
 		if [ "$2" == 'mail' ]; then
-			check_result $E_EXISTS "Mail domain $1 exists"
+			check_result "$E_EXISTS" "Mail domain $1 exists"
 		fi
 		mail_user=$(echo "$mail" | cut -f 7 -d /)
 		if [ "$mail_user" != "$user" ]; then

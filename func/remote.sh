@@ -117,7 +117,7 @@ is_dnshost_new() {
 	if [ -e "$HESTIA/conf/dns-cluster.conf" ]; then
 		check_host=$(grep "HOST='$host'" $HESTIA/conf/dns-cluster.conf)
 		if [ -n "$check_host" ]; then
-			check_result $E_EXISTS "remote dns host $host exists"
+			check_result "$E_EXISTS" "remote dns host $host exists"
 		fi
 	fi
 }

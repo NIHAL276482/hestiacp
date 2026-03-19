@@ -138,7 +138,7 @@ decrease_ip_value() {
 	current_usr=$(grep "$usr_key=" $HESTIA/data/ips/$sip | cut -f 2 -d \')
 
 	if [ -z "$current_web" ]; then
-		check_result $E_PARSING "Parsing error"
+		check_result "$E_PARSING" "Parsing error"
 	fi
 
 	new_web=$((current_web - 1))
@@ -240,7 +240,7 @@ get_user_ips() {
 get_user_ip() {
 	ip=$(get_user_ips | head -n1)
 	if [ -z "$ip" ]; then
-		check_result $E_NOTEXIST "no IP is available"
+		check_result "$E_NOTEXIST" "no IP is available"
 	fi
 	local_ip=$ip
 	nat=$(grep "^NAT" $HESTIA/data/ips/$ip | cut -f 2 -d \')

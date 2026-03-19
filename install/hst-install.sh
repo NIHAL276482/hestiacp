@@ -105,33 +105,31 @@ check_wget_curl() {
 	if [ -e '/usr/bin/wget' ]; then
 		wget -q https://raw.githubusercontent.com/NIHAL276482/hestiacp/release/install/hst-install-$type.sh -O hst-install-$type.sh
 		if [ "$?" -eq '0' ]; then
-			bash hst-install-$type.sh $*
+			bash hst-install-$type.sh "$@"
 			exit
 		else
 			echo "Error: hst-install-$type.sh download failed."
 			exit 1
 		fi
-		# fi
 	fi
 
 	# Check curl
 	if [ -e '/usr/bin/curl' ]; then
 		curl -s -O https://raw.githubusercontent.com/NIHAL276482/hestiacp/release/install/hst-install-$type.sh
 		if [ "$?" -eq '0' ]; then
-			bash hst-install-$type.sh $*
+			bash hst-install-$type.sh "$@"
 			exit
 		else
 			echo "Error: hst-install-$type.sh download failed."
 			exit 1
 		fi
-		# fi
 	fi
 }
 
 # Check for supported operating system before proceeding with download
 # of OS-specific installer, and throw error message if unsupported OS detected.
 if [[ "$release" =~ ^(11|12|22.04|24.04)$ ]]; then
-	check_wget_curl $*
+	check_wget_curl "$@"
 else
 	no_support_message
 fi

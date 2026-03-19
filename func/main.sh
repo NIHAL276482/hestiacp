@@ -256,7 +256,7 @@ generate_password() {
 
 # Package existence check
 is_package_valid() {
-	if [ -z $1 ]; then
+	if [ -z "$1" ]; then
 		if [ ! -e "$HESTIA/data/packages/$package.pkg" ]; then
 			check_result "$E_NOTEXIST" "package $package doesn't exist"
 		fi
@@ -739,7 +739,7 @@ is_localpart_format_valid() {
 # Username / ftp username format validator
 is_user_format_valid() {
 	if [ ${#1} -eq 1 ]; then
-		if ! [[ "$1" =~ ^^[[:alnum:]]$ ]]; then
+		if ! [[ "$1" =~ ^[[:alnum:]]$ ]]; then
 			check_result "$E_INVALID" "invalid $2 format :: $1"
 		fi
 	else
@@ -1676,7 +1676,7 @@ is_hestia_package() {
 		fi
 	done
 	if [ "$check" != "true" ]; then
-		check_result $E_INVALID "$2 package is not controlled by hestiacp"
+		check_result "$E_INVALID" "$2 package is not controlled by hestiacp"
 	fi
 }
 
