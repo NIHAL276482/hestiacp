@@ -72,7 +72,7 @@ if [ -f /etc/hosts ]; then
 		nlines_to_del="$((ndup_hosts - 1))"
 		lines_to_del="$(grep -n -E "^127\.0\.0\.1\s{1,}${domain}$" /etc/hosts | head -n${nlines_to_del} | awk -F ':' '{print $1}')"
 		for i in $lines_to_del; do
-			if [[ -z $list_lines ]]; then
+			if [[ -z "$list_lines" ]]; then
 				list_lines="${i}d"
 			else
 				list_lines+=";${i}d"

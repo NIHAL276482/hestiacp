@@ -342,7 +342,7 @@ add_web_config() {
 
 # Get config top and bottom line number
 get_web_config_lines() {
-	tpl_lines=$(egrep -ni "name %domain_idn%" $1 | grep -w %domain_idn%)
+	tpl_lines=$(grep -En "name %domain_idn%" $1 | grep -w %domain_idn%)
 	tpl_lines=$(echo "$tpl_lines" | cut -f 1 -d :)
 	tpl_last_line=$(wc -l $1 | cut -f 1 -d ' ')
 	if [ -z "$tpl_lines" ]; then
@@ -352,7 +352,7 @@ get_web_config_lines() {
 	domain_idn=$domain
 	format_domain_idn
 	vhost_lines=$(grep -niF "name $domain_idn" $2)
-	vhost_lines=$(echo "$vhost_lines" | egrep "$domain_idn($| |;)")
+	vhost_lines=$(echo "$vhost_lines" | grep -E "$domain_idn($| |;)")
 	vhost_lines=$(echo "$vhost_lines" | cut -f 1 -d :)
 	if [ -z "$vhost_lines" ]; then
 		check_result "$E_PARSING" "can't parse config $2"
@@ -646,8 +646,7 @@ get_next_dnsrecord() {
 # Sort DNS records
 sort_dns_records() {
 	conf="$USER_DATA/dns/$domain.conf"
-	cat $conf | sort -n -k 2 -t \' > $conf.tmp
-	mv -f $conf.tmp $conf
+	sort -n -k 2 -t \' "$conf" -o "$conf"
 }
 
 # Check if this is a last record

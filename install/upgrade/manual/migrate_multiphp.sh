@@ -110,7 +110,7 @@ if [ "$num_php_versions" -gt 1 ] && [ -z "$WEB_BACKEND" ]; then
 				cp "$WEBTPL/$WEB_SYSTEM/$domain_tpl.tpl" "$WEBTPL/$WEB_SYSTEM/php-fpm/$web_tpl.tpl"
 				cp "$WEBTPL/$WEB_SYSTEM/$domain_tpl.stpl" "$WEBTPL/$WEB_SYSTEM/php-fpm/$web_tpl.stpl"
 
-				if [[ $(grep "unix:/" $WEBTPL/$WEB_SYSTEM/$domain_tpl.tpl | egrep -v "^\s*#" | tail -n1) =~ unix:\/run\/php\/php([0-9]+\.[0-9]+)-fpm.+\.sock ]]; then
+				if [[ $(grep "unix:/" $WEBTPL/$WEB_SYSTEM/$domain_tpl.tpl | grep -E -v "^\s*#" | tail -n1) =~ unix:\/run\/php\/php([0-9]+\.[0-9]+)-fpm.+\.sock ]]; then
 
 					# Found a custom template that is based on official multiphp one
 					backend_tpl="PHP-${BASH_REMATCH[1]/\./_}"

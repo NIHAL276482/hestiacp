@@ -39,7 +39,7 @@ check_hestia_demo_mode
 
 IFS=$'\n'
 
-if [ -z $host ]; then
+if [ -z "$host" ]; then
 	hosts=$(cat "$HESTIA/conf/dns-cluster.conf")
 else
 	hosts=$(grep "HOST='$host'" "$HESTIA/conf/dns-cluster.conf")

@@ -81,7 +81,7 @@ if [ "$rtype" != "CAA" ]; then
 fi
 
 if [ "$record" = "@" ] && [ "$rtype" = "CNAME" ]; then
-	check_result $E_INVALID "CNAME on root is not allowed"
+	check_result "$E_INVALID "CNAME on root is not allowed"
 fi
 
 # Additional argument formatting

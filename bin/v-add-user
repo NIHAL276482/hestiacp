@@ -71,7 +71,7 @@ check_hestia_demo_mode
 #----------------------------------------------------------#
 
 # Parsing package data
-pkg_data=$(cat $HESTIA/data/packages/$package.pkg | egrep -v "TIME|DATE")
+pkg_data=$(cat $HESTIA/data/packages/$package.pkg | grep -E -v "TIME|DATE")
 
 # Checking shell
 shell_conf=$(echo "$pkg_data" | grep -m1 'SHELL' | cut -f 2 -d \')

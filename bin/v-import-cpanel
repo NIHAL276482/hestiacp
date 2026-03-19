@@ -80,7 +80,7 @@ cd $tmpdir/*
 main_dir=$(pwd)
 echo "Access tmp directory $main_dir"
 dbprefix=$(cat meta/dbprefix)
-if [ $dbprefix == 1 ]; then
+if [ "$dbprefix" = 1 ]; then
 	echo "Error 255 - I dont like your prefix, I dont want do this job"
 	exit 255
 fi

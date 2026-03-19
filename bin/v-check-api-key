@@ -41,17 +41,17 @@ check_hestia_demo_mode
 key="$(basename "$1")"
 
 # Exit if Key is unset or to short
-[[ -z $key || ${#key} -lt 16 ]] && abort_missmatch
+[[ -z "$key" || ${#key} -lt 16 ]] && abort_missmatch
 
 # Key file must exist
 maybe_key_path="$(readlink -e "${HESTIA}/data/keys/${key}")"
-[[ -z $maybe_key_path ]] && abort_missmatch
+[[ -z "$maybe_key_path" ]] && abort_missmatch
 
 # Key file cannot be the key store
-[[ $maybe_key_path == "${HESTIA}/data/keys" ]] && abort_missmatch
+[[ "$maybe_key_path" = "${HESTIA}/data/keys" ]] && abort_missmatch
 
 # Key file must be in the key store
-[[ $maybe_key_path == "${HESTIA}/data/keys/"* ]] || abort_missmatch
+[[ "$maybe_key_path" = "${HESTIA}/data/keys/"* ]] || abort_missmatch
 
 #----------------------------------------------------------#
 #                       Hestia                             #

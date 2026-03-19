@@ -43,14 +43,14 @@ fi
 
 # Checking source path
 rpath=$(readlink -f "$src_file")
-if [ -z "$(echo $rpath | egrep "^/tmp|^$homedir")" ]; then
+if [ -z "$(echo $rpath | grep -E "^/tmp|^$homedir")" ]; then
 	echo "Error: invalid source path $src_file"
 	exit 2
 fi
 
 # Checking destination path
 rpath=$(readlink -f "$dst_file")
-if [ -z "$(echo $rpath | egrep "^/tmp|^$homedir")" ]; then
+if [ -z "$(echo $rpath | grep -E "^/tmp|^$homedir")" ]; then
 	echo "Error: invalid destination path $dst_file"
 	exit 2
 fi

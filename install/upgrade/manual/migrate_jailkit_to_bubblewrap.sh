@@ -36,7 +36,7 @@ for user in $("$BIN/v-list-users" list); do
 
 	# If jail enabled remove the jailkit jail first then bubblewrap the jail
 	if [ -n "$check_jail_enabled" ]; then
-		user_shell_rssh_nologin=$(grep "^$user:" /etc/passwd | egrep "rssh|nologin")
+		user_shell_rssh_nologin=$(grep "^$user:" /etc/passwd | grep -E "rssh|nologin")
 
 		# Only remove the jail when it's not needed for rssh or nologin
 		if [ -z "$user_shell_rssh_nologin" ]; then

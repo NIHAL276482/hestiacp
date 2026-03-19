@@ -230,7 +230,7 @@ validate_email() {
 	fi
 }
 
-version_ge() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1" -o -n "$1" -a "$1" = "$2"; }
+version_ge() { [[ "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1" ]] || [[ -n "$1" && "$1" = "$2" ]]; }
 
 #----------------------------------------------------------#
 #                    Verifications                         #
@@ -325,7 +325,7 @@ if [ -n "$multiphp" ]; then
 		php_versions=$(echo $multiphp | tr ',' "\n")
 		multiphp_version=()
 		for php_version in "${php_versions[@]}"; do
-			if [[ $(echo "${multiphp_v[@]}" | fgrep -w "$php_version") ]]; then
+			if [[ $(echo "${multiphp_v[@]}" | grep -F -w "$php_version") ]]; then
 				multiphp_version=(${multiphp_version[@]} "$php_version")
 			else
 				echo "$php_version is not supported"
@@ -341,7 +341,7 @@ if [ -n "$multiphp" ]; then
 		fpm_v=$(printf "%s\n" "${multiphp_version[@]}" | sort -V | tail -n1)
 		fpm_last=$(printf "%s\n" "${multiphp_required[@]}" | sort -V | tail -n1)
 		# Allow Maintainer to set minimum fpm version to make sure phpmyadmin and roundcube keep working
-		if [[ -z $(echo "${multiphp_required[@]}" | fgrep -w $fpm_v) ]]; then
+		if [[ -z $(echo "${multiphp_required[@]}" | grep -F -w $fpm_v) ]]; then
 			if version_ge $fpm_v $fpm_last; then
 				multiphp_version=(${multiphp_version[@]} $fpm_last)
 				fpm_v=$fpm_last

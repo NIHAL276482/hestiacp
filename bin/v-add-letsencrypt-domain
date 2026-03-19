@@ -286,7 +286,7 @@ if [[ "$status" -ne 201 ]]; then
 			fi
 		fi
 	fi
-	check_result $E_CONNECT "Let's Encrypt new auth status $status ($domain)"
+	check_result "$E_CONNECT" "Let's Encrypt new auth status $status ($domain)"
 fi
 
 # Requesting authorization token / STEP 3
@@ -347,11 +347,11 @@ for auth in $authz; do
 				# Get root directory from configuration
 				domain_config="$HOMEDIR/$user/conf/web/$domain"
 				if [ -f "$domain_config/apache2.conf" ]; then
-					well_known="$(cat $domain_config/apache2.conf | egrep \
+					well_known="$(cat $domain_config/apache2.conf | grep -E \
 						'^\s+DocumentRoot' | awk '{split($0, a, " "); \
                                 print a[2]}')/.well-known"
 				else
-					well_known="$(cat $domain_config/nginx.conf | egrep '^\s+root' \
+					well_known="$(cat $domain_config/nginx.conf | grep -E '^\s+root' \
 						| awk '{split($0, a, " "); print a[2]}' \
 						| sed 's/;$//')/.well-known"
 				fi

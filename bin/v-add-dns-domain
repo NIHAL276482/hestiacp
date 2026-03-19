@@ -125,7 +125,7 @@ check_hestia_demo_mode
 #----------------------------------------------------------#
 
 # Defining NS variables
-if [ -z $ns2 ]; then
+if [ -z "$ns2" ]; then
 	i=1
 	ns=$(get_user_value '$NS')
 	for nameserver in ${ns//,/ }; do

@@ -48,7 +48,7 @@ if [ "$PROXY_SYSTEM" = 'nginx' ] || [ "$WEB_BACKEND" = "php-fpm" ]; then
 	cp -rf "${HESTIA_INSTALL_DIR}/templates/web/nginx" "${WEBTPL}/"
 fi
 
-for webtpl_folder in $(ls $HESTIA_INSTALL_DIR/templates/web/* -d 2> /dev/null | egrep -v '/(nginx)$'); do
+for webtpl_folder in $(ls $HESTIA_INSTALL_DIR/templates/web/* -d 2> /dev/null | grep -E -v '/(nginx)$'); do
 	cp -rf "${webtpl_folder}" "${WEBTPL}/"
 done
 

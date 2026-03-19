@@ -96,7 +96,7 @@ for host in $hosts; do
 		sql="psql -h $HOST -U $USER"
 
 		# Checking empty vars
-		if [ -z $HOST ] || [ -z $USER ] || [ -z $PASSWORD ]; then
+		if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$PASSWORD" ]; then
 			echo "Error: config is broken"
 			log_event "$E_PARSING" "$ARGUMENTS"
 			exit "$E_PARSING"

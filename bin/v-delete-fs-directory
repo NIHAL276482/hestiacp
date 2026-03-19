@@ -41,7 +41,7 @@ fi
 
 # Checking destination path
 rpath=$(readlink -f "$dst_dir")
-if [ -z "$(echo $rpath | egrep "^/tmp|^$homedir")" ]; then
+if [ -z "$(echo $rpath | grep -E "^/tmp|^$homedir")" ]; then
 	echo "Error: invalid destination path $dst_dir"
 	exit 1
 fi

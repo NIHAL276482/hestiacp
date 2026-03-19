@@ -56,7 +56,7 @@ disk_usage=$(df $BACKUP | tail -n1 | tr ' ' '\n' | grep % | cut -f 1 -d %)
 if [ "$disk_usage" -ge "$BACKUP_DISK_LIMIT" ]; then
 	echo "Error: Not enough disk space" | $SENDMAIL -s "$subj" $email $notify
 	sed -i "/ $user /d" $HESTIA/data/queue/backup.pipe
-	check_result $E_DISK "Not enough disk space"
+	check_result "$E_DISK "Not enough disk space"
 fi
 
 # Checking local backup

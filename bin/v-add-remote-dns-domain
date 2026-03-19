@@ -60,7 +60,7 @@ if [ "$DNS_CLUSTER_SYSTEM" = "hestia-zone" ]; then
 	str=$(echo "$str" | sed "s/SLAVE=''/SLAVE='yes'/g")
 	ip=$(ip addr | grep 'inet ' | grep global | head -n1 | awk '{print $2}' | cut -f1 -d/)
 	source_conf $HESTIA/data/ips/$ip
-	if [ -z $NAT ]; then
+	if [ -z "$NAT" ]; then
 		str=$(echo "$str" | sed "s/MASTER=''/MASTER='$ip'/g")
 	else
 		str=$(echo "$str" | sed "s/MASTER=''/MASTER='$NAT'/g")

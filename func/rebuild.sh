@@ -848,7 +848,7 @@ rebuild_pgsql_database() {
 	host_str=$(grep "HOST='$HOST'" $HESTIA/conf/pgsql.conf)
 	parse_object_kv_list "$host_str"
 	export PGPASSWORD="$PASSWORD"
-	if [ -z $HOST ] || [ -z $USER ] || [ -z $PASSWORD ] || [ -z $TPL ]; then
+	if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$PASSWORD" ] || [ -z "$TPL" ]; then
 		echo "Error: postgresql config parsing failed"
 		if [ -n "$SENDMAIL" ]; then
 			echo "Can't parse PostgreSQL config" | $SENDMAIL -s "$subj" $email
@@ -895,7 +895,7 @@ import_mysql_database() {
 
 	host_str=$(grep "HOST='$HOST'" $HESTIA/conf/mysql.conf)
 	parse_object_kv_list "$host_str"
-	if [ -z $HOST ] || [ -z $USER ] || [ -z $PASSWORD ]; then
+	if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$PASSWORD" ]; then
 		echo "Error: mysql config parsing failed"
 		log_event "$E_PARSING" "$ARGUMENTS"
 		exit "$E_PARSING"
@@ -914,7 +914,7 @@ import_pgsql_database() {
 	host_str=$(grep "HOST='$HOST'" $HESTIA/conf/pgsql.conf)
 	parse_object_kv_list "$host_str"
 	export PGPASSWORD="$PASSWORD"
-	if [ -z $HOST ] || [ -z $USER ] || [ -z $PASSWORD ] || [ -z $TPL ]; then
+	if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$PASSWORD" ] || [ -z "$TPL" ]; then
 		echo "Error: postgresql config parsing failed"
 		log_event "$E_PARSING" "$ARGUMENTS"
 		exit "$E_PARSING"

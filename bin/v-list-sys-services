@@ -114,7 +114,7 @@ get_srv_state() {
 			pid=$(echo "$pids" | awk -F '|' '{print $NF}')
 		fi
 		pids=${pids%|}
-		pids=$(egrep "$pids" $tmp_file)
+		pids=$(grep -E "$pids" $tmp_file)
 
 		# Calculating CPU usage
 		cpu=$(echo "$pids" | awk '{ sum += $2} END {print sum}')

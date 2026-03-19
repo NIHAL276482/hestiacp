@@ -98,8 +98,8 @@ is_pgsql_host_alive() {
 args_usage='TYPE HOST DBUSER DBPASS [MAX_DB] [CHARSETS] [TPL] [PORT]'
 check_args '4' "$#" "$args_usage"
 
-if [ -z $charsets ]; then charsets="UTF8,LATIN1,WIN1250,WIN1251,WIN1252,WIN1256,WIN1258,KOI8"; fi
-if [ -z $template ]; then template="template1"; fi
+if [ -z "$charsets" ]; then charsets="UTF8,LATIN1,WIN1250,WIN1251,WIN1252,WIN1256,WIN1258,KOI8"; fi
+if [ -z "$template" ]; then template="template1"; fi
 
 database_set_default_ports
 

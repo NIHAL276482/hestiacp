@@ -74,7 +74,7 @@ if [ "$1" = "updatessl" ]; then
 	exit
 fi
 
-if [ $WEB_SYSTEM = 'nginx' ]; then
+if [ "$WEB_SYSTEM" = 'nginx' ]; then
 	if [ "$1" = "ssl" ]; then
 		restart="ssl"
 	fi
@@ -88,7 +88,7 @@ if [ $WEB_SYSTEM = 'nginx' ]; then
 		send_email_report
 		check_result "$E_RESTART" "$WEB_SYSTEM restart failed"
 	fi
-elif [ $WEB_SYSTEM = 'apache2' ]; then
+elif [ "$WEB_SYSTEM" = 'apache2' ]; then
 	if [ "$DEBUG_MODE" = "true" ]; then
 		echo "[  $date | $WEB_SYSTEM | WEB ]" >> /var/log/hestia/debug.log 2>&1
 		apache2ctl configtest >> /var/log/hestia/debug.log 2>&1

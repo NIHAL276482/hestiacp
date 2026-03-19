@@ -41,7 +41,7 @@ fi
 echo "<h2>$WEB_SYSTEM STATUS</h2>" | tr '[:lower:]' '[:upper:]'
 if [ "$WEB_SYSTEM" != 'nginx' ]; then
 	wget -qO- http://localhost:8081/server-status/ \
-		| egrep -v "html|DOCTYPE|h1>|title|head"
+		| grep -E -v "html|DOCTYPE|h1>|title|head"
 else
 	wget -qO- http://localhost:8084/
 fi

@@ -47,14 +47,14 @@ fi
 
 # Checking source path
 rpath=$(readlink -f "$src_file")
-if [ -z "$(echo $rpath | egrep "^/tmp|^$homedir|^$BACKUP/$user\.|^$BACKUP/tmp\.")" ]; then
+if [ -z "$(echo $rpath | grep -E "^/tmp|^$homedir|^$BACKUP/$user\.|^$BACKUP/tmp\.")" ]; then
 	echo "Error: invalid source path $src_file"
 	exit 2
 fi
 
 # Checking destination path
 rpath=$(readlink -f "$dst_dir")
-if [ -z "$(echo $rpath | egrep "^/tmp|^$homedir")" ]; then
+if [ -z "$(echo $rpath | grep -E "^/tmp|^$homedir")" ]; then
 	echo "Error: invalid destination path $dst_dir"
 	exit 2
 fi
@@ -64,7 +64,7 @@ if [ -n "$strip" ]; then
 	tar_strip_level="--strip-components $strip"
 fi
 # Extracting gziped archive
-if [ -n "$(echo $src_file | egrep -i '.tgz|.tar.gz')" ]; then
+if [ -n "$(echo $src_file | grep -E -i '.tgz|.tar.gz')" ]; then
 	x='yes'
 	if [ -z "$test" ] || [ "$test" = "no" ]; then
 		user_exec mkdir -p "$dst_dir" > /dev/null 2>&1
@@ -77,7 +77,7 @@ if [ -n "$(echo $src_file | egrep -i '.tgz|.tar.gz')" ]; then
 fi
 
 # Extracting bziped archive
-if [ -n "$(echo $src_file | egrep -i '.tbz|.tar.bz')" ]; then
+if [ -n "$(echo $src_file | grep -E -i '.tbz|.tar.bz')" ]; then
 	x='yes'
 	if [ -z "$test" ] || [ "$test" = "no" ]; then
 		user_exec mkdir -p "$dst_dir" > /dev/null 2>&1
@@ -90,7 +90,7 @@ if [ -n "$(echo $src_file | egrep -i '.tbz|.tar.bz')" ]; then
 fi
 
 # Extracting ZSTD archive
-if [ -n "$(echo $src_file | egrep -i '.tar.zst')" ]; then
+if [ -n "$(echo $src_file | grep -E -i '.tar.zst')" ]; then
 	x='yes'
 	if [ -z "$test" ] || [ "$test" = "no" ]; then
 		user_exec mkdir -p "$dst_dir" > /dev/null 2>&1

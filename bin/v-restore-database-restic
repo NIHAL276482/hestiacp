@@ -83,13 +83,13 @@ for db in $DB; do
 		if [ "$BACKUP_MODE" = "zstd" ]; then
 			restic --repo "$REPO$user" --password-file "$USER_DATA/restic.conf" dump "$snapshot" "/home/$user/backup/db/$db/$db.$TYPE.sql.zst" > $tmpdir/$db.$TYPE.sql.zst
 			if [ "$?" -ne 0 ]; then
-				check_result $E_NOTEXIST "Unable to download database"
+				check_result "$E_NOTEXIST" "Unable to download database"
 			fi
 			pzstd -d "$tmpdir/$db.$TYPE.sql.zst"
 		else
 			restic --repo "$REPO$user" --password-file "$USER_DATA/restic.conf" dump "$snapshot" "/home/$user/backup/db/$db/$db.$TYPE.sql.gz" > $tmpdir/$db.$TYPE.sql.gz
 			if [ "$?" -ne 0 ]; then
-				check_result $E_NOTEXIST "Unable to download database"
+				check_result "$E_NOTEXIST" "Unable to download database"
 			fi
 			gzip -d "$tmpdir/$db.$TYPE.sql.gz"
 		fi

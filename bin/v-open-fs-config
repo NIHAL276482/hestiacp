@@ -38,12 +38,12 @@ if [ -n "$src_file" ]; then
 	services="nginx|apache|httpd|php|ftp|bind|named|exim|dovecot|spamassassin"
 	services="$services|clam|mysql|postgresql|pgsql|cron|ssh|fail2ban|iptables"
 	services="$services|my.cnf|hestiaweb"
-	spath=$(echo "$rpath" | egrep "$services")
+	spath=$(echo "$rpath" | grep -E "$services")
 	if [ -z "$spath" ]; then
 		echo "Error: invalid source path $src_file"
 		exit 2
 	fi
-	spath=$(echo "$rpath" | egrep "/etc|/var/lib|/var/spool/cron/")
+	spath=$(echo "$rpath" | grep -E "/etc|/var/lib|/var/spool/cron/")
 	if [ -z "$spath" ]; then
 		echo "Error: invalid source path $src_file"
 		exit 2

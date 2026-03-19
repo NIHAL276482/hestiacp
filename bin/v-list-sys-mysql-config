@@ -23,7 +23,7 @@ source_conf "$HESTIA/conf/hestia.conf"
 
 # JSON list function
 json_list() {
-	str=$(echo "$config" | egrep "$keys" \
+	str=$(echo "$config" | grep -E "$keys" \
 		| sed -e "s/[ ]*=/=/" -e "s/=[ ]*/=\'/" -e "s/$/'/")
 	parse_object_kv_list "$str"
 	echo '{
@@ -40,20 +40,20 @@ json_list() {
 
 # SHELL list function
 shell_list() {
-	echo "$config" | egrep "$keys" | tr '=' ' '
+	echo "$config" | grep -E "$keys" | tr '=' ' '
 	echo "config_path $config_path"
 }
 
 # PLAIN list function
 plain_list() {
-	echo "$config" | egrep "$keys" | tr '=' ' '
+	echo "$config" | grep -E "$keys" | tr '=' ' '
 	echo "config_path $config_path"
 }
 
 # CSV list function
 csv_list() {
 	echo "$keys" | sed "s/|/,/g"
-	echo "$config" | egrep "$keys" | tr '=' ' ' | awk '{print $2}' | tr '\n' ','
+	echo "$config" | grep -E "$keys" | tr '=' ' ' | awk '{print $2}' | tr '\n' ','
 	echo
 }
 

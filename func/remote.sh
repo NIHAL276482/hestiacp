@@ -10,7 +10,7 @@
 is_procces_running() {
 	SCRIPT=$(basename $0)
 	for pid in $(pidof -x $SCRIPT); do
-		if [ $pid != $$ ]; then
+		if [ "$pid" != "$$" ]; then
 			check_result "$E_INUSE" "$SCRIPT is already running"
 		fi
 	done
@@ -90,7 +90,7 @@ send_ssh_cmd() {
 	else
 		args="sudo $BIN/$1 \"$2\" \"$3\" \"$4\" \"$5\""
 	fi
-	ssh -i $IDENTITY_FILE $USER@$HOST -p $PORT "$args" > /dev/null 2>&1
+	ssh -i "$IDENTITY_FILE" "$USER@$HOST" -p "$PORT" "$args" > /dev/null 2>&1
 	if [ "$?" -ne '0' ]; then
 		return 1
 	else
@@ -180,15 +180,15 @@ remote_dns_health_check() {
 
 cluster_cmd() {
 	case $TYPE in
-		ssh) send_ssh_cmd $* ;;
-		api) send_api_cmd $* ;;
+		ssh) send_ssh_cmd "$@" ;;
+		api) send_api_cmd "$@" ;;
 	esac
 }
 
 cluster_file() {
 	case $TYPE in
-		ssh) send_scp_file $* ;;
-		api) send_api_file $* ;;
+		ssh) send_scp_file "$@" ;;
+		api) send_api_file "$@" ;;
 	esac
 }
 

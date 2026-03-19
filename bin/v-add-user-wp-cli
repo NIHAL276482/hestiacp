@@ -53,8 +53,8 @@ if [ -f "$WPCLI_BIN" ]; then
 	exit
 fi
 
-[ -z "$(readlink -m "$WPCLI_DIR" | egrep "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (WP Cli dir)"
-[ -z "$(readlink -m "$WPCLI_BIN" | egrep "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (WP Cli bin)"
+[ -z "$(readlink -m "$WPCLI_DIR" | grep -E "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (WP Cli dir)"
+[ -z "$(readlink -m "$WPCLI_BIN" | grep -E "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (WP Cli bin)"
 
 mkdir -p "$WPCLI_DIR"
 chown $user:$user "$WPCLI_DIR"

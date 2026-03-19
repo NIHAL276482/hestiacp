@@ -51,7 +51,7 @@ SENDMAIL="$HESTIA/web/inc/mail-wrapper.php"
 HESTIA_GIT_REPO="https://raw.githubusercontent.com/NIHAL276482/hestiacp"
 HESTIA_THEMES="$HESTIA/web/css/themes"
 HESTIA_THEMES_CUSTOM="$HESTIA/web/css/themes/custom"
-SCRIPT="$(basename $0)"
+SCRIPT="$(basename "$0")"
 CHECK_RESULT_CALLBACK=""
 
 # Return codes
@@ -116,9 +116,9 @@ done
 # Log event function
 log_event() {
 	if [ -z "$time" ]; then
-		LOG_TIME="$(date +'%F %T') $(basename $0)"
+		LOG_TIME="$(date +'%F %T') $(basename "$0")"
 	else
-		LOG_TIME="$date $time $(basename $0)"
+		LOG_TIME="$date $time $(basename "$0")"
 	fi
 	if [ "$1" -eq 0 ]; then
 		echo "$LOG_TIME $2" >> $HESTIA/log/system.log
@@ -172,7 +172,7 @@ log_history() {
 
 # Result checker
 check_result() {
-	if [ $1 -ne 0 ]; then
+	if [ "$1" -ne 0 ]; then
 		local err_code="${3:-$1}"
 		if [[ -n "$CHECK_RESULT_CALLBACK" && "$(type -t "$CHECK_RESULT_CALLBACK")" == 'function' ]]; then
 			$CHECK_RESULT_CALLBACK "$err_code" "$2"
@@ -188,13 +188,13 @@ check_result() {
 # Argument list checker
 check_args() {
 	if [ "$1" -gt "$2" ]; then
-		echo "Usage: $(basename $0) $3"
+		echo "Usage: $(basename "$0") $3"
 		check_result "$E_ARGS" "not enough arguments" > /dev/null
 	fi
 }
 
 # Define version check function
-version_ge() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1" -o -n "$1" -a "$1" = "$2"; }
+version_ge() { [[ "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1" ]] || [[ -n "$1" && "$1" = "$2" ]]; }
 
 # Subsystem checker
 is_system_enabled() {
@@ -429,7 +429,7 @@ is_object_unsuspended() {
 is_object_value_empty() {
 	str=$(grep "$2='$3'" $USER_DATA/$1.conf)
 	parse_object_kv_list "$str"
-	eval value=$4
+	eval "value=$4"
 	if [ -n "$value" ] && [ "$value" != 'no' ]; then
 		check_result "$E_EXISTS" "${4//$/}=$value already exists"
 	fi
@@ -439,7 +439,7 @@ is_object_value_empty() {
 is_object_value_exist() {
 	str=$(grep "$2='$3'" $USER_DATA/$1.conf)
 	parse_object_kv_list "$str"
-	eval value=$4
+	eval "value=$4"
 	if [ -z "$value" ] || [ "$value" = 'no' ]; then
 		check_result "$E_NOTEXIST" "${4//$/}=$value doesn't exist"
 	fi
@@ -671,8 +671,7 @@ get_next_cronjob() {
 
 # Sort cron jobs by id
 sort_cron_jobs() {
-	sort -n -k 2 -t \' $USER_DATA/cron.conf > $USER_DATA/cron.tmp
-	mv -f $USER_DATA/cron.tmp $USER_DATA/cron.conf
+	sort -n -k 2 -t \' "$USER_DATA/cron.conf" -o "$USER_DATA/cron.conf"
 }
 
 # Sync cronjobs with system cron
@@ -1279,7 +1278,7 @@ is_hash_format_valid() {
 
 # Format validation controller
 is_format_valid() {
-	for arg_name in $*; do
+	for arg_name in "$@"; do
 		eval arg=\$$arg_name
 		if [ -n "$arg" ]; then
 			case $arg_name in

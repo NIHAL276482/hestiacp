@@ -115,7 +115,7 @@ INSTALL_DIR='/tmp/hestia-src'
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARCHIVE_DIR="/tmp/hestia-src/archive/"
 architecture="$(arch)"
-if [ $architecture == 'aarch64' ]; then
+if [ "$architecture" = 'aarch64' ]; then
 	BUILD_ARCH='arm64'
 else
 	BUILD_ARCH='amd64'
@@ -232,7 +232,7 @@ echo "Installing dependencies for compilation..."
 apt-get -qq install -y $SOFTWARE > /dev/null 2>&1
 
 # Fix for Debian PHP environment
-if [ $BUILD_ARCH == "amd64" ]; then
+if [ "$BUILD_ARCH" = "amd64" ]; then
 	if [ ! -L /usr/local/include/curl ]; then
 		ln -s /usr/include/x86_64-linux-gnu/curl /usr/local/include/curl
 	fi

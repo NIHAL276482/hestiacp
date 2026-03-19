@@ -67,7 +67,7 @@ for user in $("$BIN/v-list-users" list); do
 			aliases=$(echo "$crt_data" | grep DNS:)
 			aliases=$(echo "$aliases" | sed -e "s/DNS://g" -e "s/,//g")
 			aliases=$(echo "$aliases" | tr ' ' '\n' | sed "/^$/d")
-			aliases=$(echo "$aliases" | egrep -v "^$domain,?$")
+			aliases=$(echo "$aliases" | grep -E -v "^$domain,?$")
 			aliases=$(echo "$aliases" | sed -e ':a;N;$!ba;s/\n/,/g')
 
 			# Parsing domain

@@ -59,9 +59,9 @@ if [ -f "$COMPOSER_BIN" ]; then
 	exit
 fi
 
-[ -z "$(readlink -m "$COMPOSER_DIR" | egrep "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (Composer dir)"
-[ -z "$(readlink -m "$COMPOSER_BIN" | egrep "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (Composer bin)"
-[ -z "$(readlink -m "$HOMEDIR/$user/.config/" | egrep "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (.conf)"
+[ -z "$(readlink -m "$COMPOSER_DIR" | grep -E "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (Composer dir)"
+[ -z "$(readlink -m "$COMPOSER_BIN" | grep -E "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (Composer bin)"
+[ -z "$(readlink -m "$HOMEDIR/$user/.config/" | grep -E "^$HOMEDIR/$user/")" ] && check_result "$E_FORBIDEN" "Path outside of user homedir (.conf)"
 
 mkdir -p "$COMPOSER_DIR"
 chown $user: "$COMPOSER_DIR"

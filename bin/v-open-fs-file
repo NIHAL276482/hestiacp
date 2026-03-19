@@ -33,7 +33,7 @@ fi
 # Checking path
 if [ -n "$src_file" ]; then
 	rpath=$(readlink -f "$src_file")
-	if [ -z "$(echo $rpath | egrep "^/tmp|^$homedir")" ]; then
+	if [ -z "$(echo $rpath | grep -E "^/tmp|^$homedir")" ]; then
 		echo "Error: invalid source path $src_file"
 		exit 2
 	fi

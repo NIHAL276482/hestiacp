@@ -107,7 +107,7 @@ ftp_backup() {
 	fi
 
 	# Check ftp permissions
-	if [ -z $BPATH ]; then
+	if [ -z "$BPATH" ]; then
 		ftmpdir="vst.bK76A9SUkt"
 	else
 		ftpc "mkdir $BPATH" > /dev/null 2>&1
@@ -125,7 +125,7 @@ ftp_backup() {
 	fi
 
 	# Checking retention (Only include .tar files)
-	if [ -z $BPATH ]; then
+	if [ -z "$BPATH" ]; then
 		backup_list=$(ftpc "ls" | awk '{print $9}' | grep "^$user\." | grep ".tar" | sort)
 	else
 		backup_list=$(ftpc "cd $BPATH" "ls" | awk '{print $9}' | grep "^$user\." | grep ".tar" | sort)
@@ -137,7 +137,7 @@ ftp_backup() {
 			backup_date=$(echo $backup | sed -e "s/$user.//" -e "s/.tar$//")
 			echo -e "$(date "+%F %T") Rotated ftp backup: $backup_date" \
 				| tee -a $BACKUP/$user.log
-			if [ -z $BPATH ]; then
+			if [ -z "$BPATH" ]; then
 				ftpc "delete $backup"
 			else
 				ftpc "cd $BPATH" "delete $backup"
@@ -148,7 +148,7 @@ ftp_backup() {
 	# Uploading backup archive
 	if [ "$localbackup" = 'yes' ]; then
 		cd $BACKUP
-		if [ -z $BPATH ]; then
+		if [ -z "$BPATH" ]; then
 			ftpc "put $user.$backup_new_date.tar"
 		else
 			ftpc "cd $BPATH" "put $user.$backup_new_date.tar"
@@ -157,7 +157,7 @@ ftp_backup() {
 		cd $tmpdir
 		tar -cf $BACKUP/$user.$backup_new_date.tar .
 		cd $BACKUP/
-		if [ -z $BPATH ]; then
+		if [ -z "$BPATH" ]; then
 			ftpc "put $user.$backup_new_date.tar"
 		else
 			ftpc "cd $BPATH" "put $user.$backup_new_date.tar"
@@ -173,7 +173,7 @@ ftp_download() {
 		PORT='21'
 	fi
 	cd $BACKUP
-	if [ -z $BPATH ]; then
+	if [ -z "$BPATH" ]; then
 		ftpc "get $1"
 	else
 		ftpc "cd $BPATH" "get $1"
@@ -186,7 +186,7 @@ ftp_delete() {
 	if [ -z "$PORT" ]; then
 		PORT='21'
 	fi
-	if [ -z $BPATH ]; then
+	if [ -z "$BPATH" ]; then
 		ftpc "delete $1"
 	else
 		ftpc "cd $BPATH" "delete $1"
@@ -323,7 +323,7 @@ sftp_download() {
 		PORT='22'
 	fi
 	cd $BACKUP
-	if [ -z $BPATH ]; then
+	if [ -z "$BPATH" ]; then
 		sftpc "get $1" > /dev/null 2>&1
 	else
 		sftpc "cd $BPATH" "get $1" > /dev/null 2>&1
@@ -337,7 +337,7 @@ sftp_delete() {
 		PORT='22'
 	fi
 	echo $BPATH
-	if [ -z $BPATH ]; then
+	if [ -z "$BPATH" ]; then
 		sftpc "rm $1" > /dev/null 2>&1
 	else
 		sftpc "cd $BPATH" "rm $1" > /dev/null 2>&1
@@ -379,7 +379,7 @@ sftp_backup() {
 		| tee -a $BACKUP/$user.log
 
 	# Checking network connection and write permissions
-	if [ -z $BPATH ]; then
+	if [ -z "$BPATH" ]; then
 		sftmpdir="vst.bK76A9SUkt"
 	else
 		sftmpdir="$BPATH/vst.bK76A9SUkt"
@@ -400,7 +400,7 @@ sftp_backup() {
 	fi
 
 	# Checking retention (Only include .tar files)
-	if [ -z $BPATH ]; then
+	if [ -z "$BPATH" ]; then
 		backup_list=$(sftpc "ls -l" | awk '{print $9}' | grep "^$user\." | grep ".tar" | sort)
 	else
 		backup_list=$(sftpc "cd $BPATH" "ls -l" | awk '{print $9}' | grep "^$user\." | grep ".tar" | sort)
@@ -412,7 +412,7 @@ sftp_backup() {
 			backup_date=$(echo $backup | sed -e "s/$user.//" -e "s/.tar.*$//")
 			echo -e "$(date "+%F %T") Rotated sftp backup: $backup_date" \
 				| tee -a $BACKUP/$user.log
-			if [ -z $BPATH ]; then
+			if [ -z "$BPATH" ]; then
 				sftpc "rm $backup" > /dev/null 2>&1
 			else
 				sftpc "cd $BPATH" "rm $backup" > /dev/null 2>&1
@@ -424,7 +424,7 @@ sftp_backup() {
 	echo "$(date "+%F %T") Uploading $user.$backup_new_date.tar" | tee -a $BACKUP/$user.log
 	if [ "$localbackup" = 'yes' ]; then
 		cd $BACKUP
-		if [ -z $BPATH ]; then
+		if [ -z "$BPATH" ]; then
 			sftpc "put $user.$backup_new_date.tar" "chmod 0600 $user.$backup_new_date.tar" > /dev/null 2>&1
 		else
 			sftpc "cd $BPATH" "put $user.$backup_new_date.tar" "chmod 0600 $user.$backup_new_date.tar" > /dev/null 2>&1
@@ -433,7 +433,7 @@ sftp_backup() {
 		cd $tmpdir
 		tar -cf $BACKUP/$user.$backup_new_date.tar .
 		cd $BACKUP/
-		if [ -z $BPATH ]; then
+		if [ -z "$BPATH" ]; then
 			sftpc "put $user.$backup_new_date.tar" "chmod 0600 $user.$backup_new_date.tar" > /dev/null 2>&1
 		else
 			sftpc "cd $BPATH" "put $user.$backup_new_date.tar" "chmod 0600 $user.$backup_new_date.tar" > /dev/null 2>&1

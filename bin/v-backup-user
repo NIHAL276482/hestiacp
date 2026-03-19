@@ -339,7 +339,7 @@ if [ -n "$WEB_SYSTEM" ] && [ "$WEB" != '*' ]; then
 		mkdir -p template/$WEB_SYSTEM/
 		mkdir template/php-fpm/
 
-		if [ $WEB_BACKEND == 'php-fpm' ]; then
+		if [ "$WEB_BACKEND" = 'php-fpm' ]; then
 			cp $HESTIA/data/templates/web/$WEB_SYSTEM/php-fpm/$TPL.tpl template/$WEB_SYSTEM/
 			cp $HESTIA/data/templates/web/$WEB_SYSTEM/php-fpm/$TPL.stpl template/$WEB_SYSTEM/
 			cp $HESTIA/data/templates/web/php-fpm/$BACKEND.tpl template/php-fpm/
@@ -663,7 +663,7 @@ if [ "$USER" != '*' ]; then
 	set -f
 	i=0
 
-	for udir in $(ls -a | egrep -v "^conf$|^web$|^dns$|^tmp$|^mail$|^\.\.$|^\.$"); do
+	for udir in $(ls -a | grep -E -v "^conf$|^web$|^dns$|^tmp$|^mail$|^\.\.$|^\.$"); do
 		exclusion=$(echo "$USER" | tr ',' '\n' | grep "^$udir$")
 		if [ -z "$exclusion" ]; then
 			((i++))

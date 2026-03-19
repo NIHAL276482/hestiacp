@@ -66,19 +66,19 @@ fi
 restic self-update > /dev/null 2>&1
 
 # Check if $repo starts with a slash
-if [[ $repo == "/"* ]]; then
+if [[ "$repo" = "/"* ]]; then
 	if [ ! -d "$repo" ]; then
-		check_result $E_NOTEXIST "Directory '$repo' does not exist"
+		check_result "$E_NOTEXIST" "Directory '$repo' does not exist"
 	fi
 fi
 
 # Check if $repo starts with rclone
-if [[ $repo == "rclone:"* ]]; then
+if [[ "$repo" = "rclone:"* ]]; then
 	# remove rclone: from $repo
 	repo2=$(echo "$repo" | sed 's/rclone://')
 	# check if rclone is working
 	if ! rclone lsd "$repo2" > /dev/null 2>&1; then
-		check_result $E_NOTEXIST "Rclone repository '$repo2' does not exist"
+		check_result "$E_NOTEXIST" "Rclone repository '$repo2' does not exist"
 	fi
 fi
 

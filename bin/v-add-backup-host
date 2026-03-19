@@ -83,7 +83,7 @@ check_hestia_demo_mode
 
 # Checking network connection
 if [ "$type" = 'ftp' ]; then
-	if [ -z $port ]; then
+	if [ -z "$port" ]; then
 		port=21
 	fi
 	PORT=$port
@@ -102,7 +102,7 @@ if [ "$type" = 'ftp' ]; then
 	fi
 
 	# Checking write permissions
-	if [ -z $path ]; then
+	if [ -z "$path" ]; then
 		ftmpdir="vst.bK76A9SUkt"
 	else
 		ftpc "mkdir $path" > /dev/null 2>&1
@@ -119,14 +119,14 @@ if [ "$type" = 'ftp' ]; then
 fi
 
 if [ "$type" = 'sftp' ]; then
-	if [ -z $port ]; then
+	if [ -z "$port" ]; then
 		port=22
 	fi
 	PORT=$port
 	USERNAME=$user
 	PASSWORD=$password
 	HOST=$host
-	if [ -z $path ]; then
+	if [ -z "$path" ]; then
 		sftmpdir="vst.bK76A9SUkt"
 		sftpc "mkdir $sftmpdir" "rmdir $sftmpdir" > /dev/null 2>&1
 	else
@@ -201,19 +201,19 @@ if [ "$type" = 'rclone' ]; then
 fi
 
 # Adding backup host
-if [ $type == 'ftp' ] || [ $type = 'sftp' ]; then
+if [ "$type" = 'ftp' ] || [ "$type" = 'sftp' ]; then
 	new_timestamp
 	str="HOST='$host'\nUSERNAME='$user'\nPASSWORD='$password'\nPRIVATEKEY='$privatekey'"
 	str="$str\nBPATH='$path'\nPORT='$port'\nTIME='$time'\nDATE='$date'"
 	echo -e "$str" > $HESTIA/conf/$type.backup.conf
 	chmod 660 $HESTIA/conf/$type.backup.conf
-elif [ $type == 'b2' ]; then
+elif [ "$type" = 'b2' ]; then
 	new_timestamp
 	str="BUCKET='$host'\nB2_KEYID='$user'\nB2_KEY='$raw_password'"
 	str="$str\nTIME='$time'\nDATE='$date'"
 	echo -e "$str" > $HESTIA/conf/$type.backup.conf
 	chmod 660 $HESTIA/conf/$type.backup.conf
-elif [ $type == "rclone" ]; then
+elif [ "$type" = "rclone" ]; then
 	new_timestamp
 	str="HOST='$host'\nBPATH='$path'"
 	str="$str\nTIME='$time'\nDATE='$date'"

@@ -59,7 +59,7 @@ fi
 
 parse_object_kv_list "$db_data"
 #Fix issue #1084 with "Upper case not allowed with PGSQL"
-if [ "$TYPE" == "pgsql" ]; then
+if [ "$TYPE" = "pgsql" ]; then
 	usersmall=$(echo "$user" | tr '[:upper:]' '[:lower:]')
 else
 	usersmall=$user

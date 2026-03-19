@@ -241,7 +241,7 @@ function run_da_db() {
 	done
 }
 
-if [[ -z $da_db_list ]]; then
+if [[ -z "$da_db_list" ]]; then
 	echo "No database found"
 else
 	run_da_db
