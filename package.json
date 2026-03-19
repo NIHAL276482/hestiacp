@@ -3,7 +3,7 @@
 	"private": true,
 	"version": "1.10.0~alpha",
 	"description": "An open-source Linux web server control panel.",
-	"repository": "https://github.com/hestiacp/hestiacp",
+	"repository": "https://github.com/NIHAL276482/hestiacp",
 	"license": "GPL-3.0-or-later",
 	"type": "module",
 	"packageManager": "npm@11.8.0",

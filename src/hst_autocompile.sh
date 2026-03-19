@@ -108,7 +108,7 @@ usage() {
 }
 
 # Set compiling directory
-REPO='hestiacp/hestiacp'
+REPO='NIHAL276482/hestiacp'
 BUILD_DIR='/tmp/hestiacp-src'
 INSTALL_DIR='/usr/local/hestia'
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -288,7 +288,7 @@ if [ "$HESTIA_DEBUG" ]; then
 fi
 
 # Generate Links for sourcecode
-HESTIA_ARCHIVE_LINK='https://github.com/hestiacp/hestiacp/archive/'$branch'.tar.gz'
+HESTIA_ARCHIVE_LINK='https://github.com/NIHAL276482/hestiacp/archive/'$branch'.tar.gz'
 if [[ $NGINX_V =~ - ]]; then
 	NGINX='https://nginx.org/download/nginx-'$(echo $NGINX_V | cut -d"-" -f1)'.tar.gz'
 else
