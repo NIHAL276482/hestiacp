@@ -710,13 +710,6 @@ if command -v ipset &>/dev/null; then
 	add_summary "Cleaned ipset sets"
 fi
 
-# UFW rules (if HestiaCP added any)
-if command -v ufw &>/dev/null; then
-	# Remove HestiaCP port rules (8083, etc.)
-	for port in 8083; do
-		run_cmd "ufw delete allow '$port' 2>/dev/null || true"
-	done
-fi
 
 success "Firewall cleaned."
 
@@ -835,16 +828,84 @@ success "Sudoers cleaned."
 # Phase 21: Remove MOTD and Login Scripts
 # ----------------------------------------------------------
 
-step "Phase 21: Removing MOTD and login scripts"
+step "Phase 21: Restoring default MOTD and login scripts"
 
+# Remove HestiaCP MOTD files
 run_cmd "rm -f /etc/update-motd.d/99-hestia"
 run_cmd "rm -f /etc/update-motd.d/90-hestia"
+run_cmd "rm -f /etc/update-motd.d/99-hestia-*"
+add_summary "Removed HestiaCP MOTD"
+
+# Restore default Ubuntu/Debian MOTD scripts if they were backed up
+# during install (HestiaCP backs up configs to /root/hst_install_backups/)
+MOTD_RESTORED=false
+for dir in /root/hst_install_backups/*/; do
+	[ -d "$dir" ] || continue
+	if [ -d "${dir}update-motd.d" ] || [ -d "${dir}motd" ]; then
+		motd_src="${dir}update-motd.d"
+		[ -d "$motd_src" ] || motd_src="${dir}motd"
+		if [ -d "$motd_src" ]; then
+			info "Restoring default MOTD from backup: $motd_src"
+			run_cmd "cp -rf '$motd_src/'* /etc/update-motd.d/ 2>/dev/null || true"
+			run_cmd "chmod +x /etc/update-motd.d/* 2>/dev/null || true"
+			MOTD_RESTORED=true
+			add_summary "Restored default MOTD from backup"
+			break
+		fi
+	fi
+done
+
+# If no backup found, reinstall the default motd package
+if [ "$MOTD_RESTORED" = false ]; then
+	# Re-enable common default MOTD scripts that HestiaCP may have disabled
+	DEFAULT_MOTD_SCRIPTS=(
+		"00-header"
+		"10-help-text"
+		"50-motd-news"
+		"91-contract-ua-esm-status"
+		"97-overlayroot"
+		"98-fsck-at-reboot"
+		"98-reboot-required"
+	)
+	for motd_script in "${DEFAULT_MOTD_SCRIPTS[@]}"; do
+		if [ -f "/etc/update-motd.d/${motd_script}.disabled" ]; then
+			info "Re-enabling MOTD script: $motd_script"
+			run_cmd "mv /etc/update-motd.d/${motd_script}.disabled /etc/update-motd.d/${motd_script}"
+			run_cmd "chmod +x /etc/update-motd.d/${motd_script}"
+			MOTD_RESTORED=true
+			add_summary "Re-enabled MOTD: $motd_script"
+		fi
+	done
+
+	# If motd package is missing, reinstall it
+	if [ "$OS_TYPE" = "ubuntu" ] && ! dpkg -l 2>/dev/null | grep -q "^ii.*base-files "; then
+		run_cmd "apt-get install -y --reinstall base-files 2>/dev/null || true"
+		add_summary "Reinstalled base-files (default MOTD)"
+	elif [ "$OS_TYPE" = "debian" ] && ! dpkg -l 2>/dev/null | grep -q "^ii.*base-files "; then
+		run_cmd "apt-get install -y --reinstall base-files 2>/dev/null || true"
+		add_summary "Reinstalled base-files (default MOTD)"
+	fi
+fi
+
+# Reset /etc/motd to default if HestiaCP modified it
+if [ -f "/etc/motd" ]; then
+	if grep -ql "Hestia|hestia|HestiaCP" /etc/motd 2>/dev/null; then
+		info "Resetting /etc/motd to default..."
+		run_cmd "printf '\n' > /etc/motd"
+		add_summary "Reset /etc/motd"
+	fi
+fi
+
+# Remove HestiaCP profile.d scripts
 run_cmd "rm -f /etc/profile.d/hestia*"
+
+# Remove HestiaCP bash completion
 run_cmd "rm -f /etc/bash_completion.d/hestia"
 run_cmd "rm -f /etc/bash_completion.d/v-*"
-add_summary "Removed login scripts"
 
-success "Login scripts cleaned."
+add_summary "Restored default MOTD and login scripts"
+
+success "Login scripts and MOTD restored."
 
 # ----------------------------------------------------------
 # Phase 22: Remove Shell Aliases and PATH Entries
