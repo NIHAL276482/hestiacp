@@ -22,6 +22,7 @@ set -euo pipefail
 LOG_FILE="/var/log/hestia-uninstall.log"
 DRY_RUN=false
 FORCE=false
+STEP_COUNT=0
 DEEP_SCAN=false
 SUMMARY=()
 WARNINGS=()
@@ -68,6 +69,7 @@ error() {
 }
 
 step() {
+    STEP_COUNT=$((STEP_COUNT + 1))
     echo -e "\n${CYAN}${BOLD}==>${NC} ${BOLD}$1${NC}"
     log "==> $1"
 }
@@ -91,6 +93,17 @@ run_cmd() {
     fi
 }
 
+# run_verbose: Same as run_cmd but shows output on screen too (for long operations)
+run_verbose() {
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "  ${YELLOW}[DRY-RUN]${NC} $*"
+        log "[DRY-RUN] $*"
+    else
+        log "[EXEC] $*"
+        eval "$@" 2>&1 | tee -a "$LOG_FILE" || true
+    fi
+}
+
 confirm() {
     if [ "$FORCE" = true ] || [ "$DRY_RUN" = true ]; then
         return 0
@@ -110,8 +123,8 @@ confirm() {
 remove_pkg() {
     local pkg="$1"
     if dpkg -l 2>/dev/null | grep -q "^ii[[:space:]].*[[:space:]]${pkg}[[:space:]]"; then
-        info "Removing package: $pkg"
-        run_cmd "DEBIAN_FRONTEND=noninteractive apt-get purge -y '$pkg' 2>/dev/null || dpkg --purge '$pkg' 2>/dev/null || true"
+        info "Removing package: $pkg (RAM: $(free -m | awk '/^Mem:/{print $3}')MB)"
+        run_verbose "DEBIAN_FRONTEND=noninteractive apt-get purge -y '$pkg' 2>/dev/null || dpkg --purge '$pkg' 2>/dev/null || true"
         add_summary "Removed package: $pkg"
     fi
 }
@@ -255,6 +268,13 @@ else
 fi
 
 # Save current hostname for potential revert
+# Display real system information
+TOTAL_RAM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo "unknown")
+USED_RAM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}' || echo "unknown")
+DISK_INFO=$(df -h / 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5" used)"}' || echo "unknown")
+CPU_CORES=$(nproc 2>/dev/null || echo "unknown")
+info "System Info: ${CPU_CORES} CPU cores | RAM: ${USED_RAM_MB}/${TOTAL_RAM_MB} MB | Disk: ${DISK_INFO}"
+
 ORIGINAL_HOSTNAME=$(hostname -f 2>/dev/null || hostname)
 info "Current hostname: $ORIGINAL_HOSTNAME"
 
@@ -444,7 +464,7 @@ HESTIA_PACKAGES=(
 for pkg in "${HESTIA_PACKAGES[@]}"; do
     if dpkg -l 2>/dev/null | grep -q "^ii.*[[:space:]]${pkg}[[:space:]]"; then
         info "Purging package: $pkg"
-        run_cmd "dpkg --purge '$pkg'"
+        run_verbose "dpkg --purge '$pkg'"
         add_summary "Purged package: $pkg"
     fi
 done
@@ -887,6 +907,23 @@ NGINX_DEFAULT
     done
 
     # Ensure required directories exist
+    # Fix redirect loops: disable HTTP->HTTPS redirects when SSL port 443 is broken/disabled
+    for rf in /etc/nginx/conf.d/*.conf /etc/nginx/conf.d/*.inc /etc/nginx/sites-enabled/* /etc/nginx/sites-available/*; do
+        if [ -f "$rf" ]; then
+            if grep -qiE "return 301 .*https|return 302 .*https|rewrite .* https" "$rf" 2>/dev/null; then
+                if ! grep -qE "listen.*443.*ssl" "$rf" 2>/dev/null || grep -q "/usr/local/hestia/ssl/" "$rf" 2>/dev/null; then
+                    warn "Redirect loop detected in $(basename "$rf") - disabling HTTPS redirect"
+                    if [ "$DRY_RUN" = false ]; then
+                        sed -i 's|^\s*return 301 https.*$|# return 301 https (disabled - redirect loop fix)|g' "$rf"
+                        sed -i 's|^\s*return 302 https.*$|# return 302 https (disabled - redirect loop fix)|g' "$rf"
+                        sed -i 's|^\s*rewrite .* https.*$|# rewrite https (disabled - redirect loop fix)|g' "$rf"
+                    fi
+                    add_summary "Fixed redirect loop in $(basename "$rf")"
+                fi
+            fi
+        fi
+    done
+
     run_cmd "mkdir -p /etc/nginx/conf.d /etc/nginx/sites-available /etc/nginx/sites-enabled"
 
     add_summary "Cleaned Nginx configurations"
@@ -1333,7 +1370,7 @@ if command -v nginx &>/dev/null && [ -d "/etc/nginx" ]; then
     info "Testing nginx configuration..."
     if nginx -t 2>&1 | grep -q "successful\|syntax is ok"; then
         success "nginx config test PASSED"
-        run_cmd "systemctl start nginx"
+        run_verbose "systemctl start nginx"
         run_cmd "systemctl enable nginx"
         add_summary "nginx started and enabled"
     else
@@ -1352,7 +1389,7 @@ if command -v apache2ctl &>/dev/null && [ -d "/etc/apache2" ]; then
     info "Testing apache configuration..."
     if apache2ctl configtest 2>&1 | grep -q "Syntax OK"; then
         success "Apache config test PASSED"
-        run_cmd "systemctl start apache2"
+        run_verbose "systemctl start apache2"
         run_cmd "systemctl enable apache2"
         add_summary "Apache started and enabled"
     else
@@ -1382,7 +1419,7 @@ success "Services verified and restarted."
 step "Phase 23: Removing orphaned dependencies"
 
 info "Running apt autoremove to clean up orphaned packages..."
-run_cmd "DEBIAN_FRONTEND=noninteractive apt-get autoremove -y 2>/dev/null || true"
+run_verbose "DEBIAN_FRONTEND=noninteractive apt-get autoremove -y 2>/dev/null || true"
 run_cmd "apt-get autoclean -y 2>/dev/null || true"
 
 add_summary "Ran apt autoremove and autoclean"
